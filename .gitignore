@@ -1,0 +1,6 @@
+# 本地数据与缓存，不上传
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/

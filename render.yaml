@@ -1,0 +1,12 @@
+# Render 一键部署配置（Blueprint）
+# 用法见 DEPLOY.md 第 3 步；DATABASE_URL 需在 Render 控制台手动填入 Neon 连接串
+services:
+  - type: web
+    name: minus80-freezer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false  # 部署时手动填写，不要提交到代码库
