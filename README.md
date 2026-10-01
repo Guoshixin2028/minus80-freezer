@@ -55,9 +55,10 @@ Windows 双击 `start.bat` 即可（自动建虚拟环境+装依赖+启动）。
 
 任选其一：
 
-1. **免费托管**（推荐 Render / Railway / Fly.io）：上传本目录，启动命令 `uvicorn app:app --host 0.0.0.0 --port $PORT`，自动获得 https 域名，把它写进 NFC 手环即可。
-2. **校园网内穿透**：cloudflare tunnel / frp，把实验室电脑的 8000 端口映射出去。
-3. **实验室电脑常驻**：最简单，手机连实验室 WiFi 直接用 IP 访问。
+1. **免费托管**（推荐，详细步骤见 [DEPLOY.md](DEPLOY.md)）：Render（Web 服务）+ Neon（免费 Postgres，环境变量 `DATABASE_URL`）→ 固定 HTTPS 域名，数据永久保存。
+2. **临时公网演示**：花生壳 hsk-cli 隧道（`hsk-cli tunnel --ip 127.0.0.1 --port 8000 --detach`），进程退出或会话到期即失效且地址会变，不适合写进 NFC 手环。
+3. **校园网内穿透**：cloudflare tunnel / frp，把实验室电脑的 8000 端口映射出去。
+4. **实验室电脑常驻**：最简单，手机连实验室 WiFi 直接用 IP 访问。
 
 ## 多人并发说明
 
