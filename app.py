@@ -3,11 +3,18 @@
 -80℃ 冰箱菌种管理台 · 云端后端
 ================================
 - 数据模型与前端 JSON 结构完全一致（racks -> boxes -> wells）
-- 双存储后端：默认 SQLite 单文件；设置环境变量 DATABASE_URL 时使用 Postgres（云端部署用）
-- 整库存取，rev 递增号实现乐观并发控制
-- 每次保存自动落一份快照（SQLite 模式写 backups/ 目录，Postgres 模式写 backups 表），最多保留 200 份
-- GET  /api/db        读取最新数据 {rev, db}
-- PUT  /api/db        保存数据（带版本校验，冲突返回 409 + 服务器最新数据）
+- 多实验室隔离：每个实验室一个独立 SQLite 文件（data/labs/<lab_id>/freezer.db），
+  互不可见；实验室名 + 密码（PBKDF2-SHA256 加盐哈希）准入，令牌或 IP 绑定鉴权
+- SQLite 单实验室库存取，rev 递增号实现乐观并发控制
+- 每次保存自动落一份快照到该实验室 backups/，最多保留 200 份
+- GET  /api/session        查询当前会话（令牌/IP 自动加入）
+- GET  /api/labs           列出所有实验室名（公开，供加入时选择）
+- POST /api/labs/create    创建实验室 {name, password} -> {token, lab}
+- POST /api/labs/join      加入实验室 {name, password} -> {token, lab}
+- POST /api/labs/claim     认领旧版单库数据 {id, name, password}
+- POST /api/labs/leave     离开（解除本 IP 绑定，令牌失效）
+- GET  /api/db             读取当前实验室最新数据 {rev, db}
+- PUT  /api/db             保存数据（带版本校验，冲突返回 409 + 服务器最新数据）
 - GET  /api/health    健康检查
 - 其余路径托管 static/ 下的前端页面
 
@@ -15,32 +22,46 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import os
+import re
+import secrets
+import shutil
 import sqlite3
 import threading
 import time
+import datetime
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+try:
+    import openpyxl
+except ImportError:  # pragma: no cover - openpyxl 是部署必备依赖
+    openpyxl = None
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("FREEZER_DATA", BASE_DIR / "data"))
-DB_PATH = DATA_DIR / "freezer.db"
-BACKUP_DIR = DATA_DIR / "backups"
+REGISTRY_PATH = DATA_DIR / "registry.db"
+LEGACY_DB_PATH = DATA_DIR / "freezer.db"
+LEGACY_BACKUP_DIR = DATA_DIR / "backups"
+LABS_DIR = DATA_DIR / "labs"
 BACKUP_KEEP = 200
-
-# 云端部署（Render/Railway 等）时设置 DATABASE_URL 指向 Postgres（如 Neon 免费库）
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+PBKDF2_ROUNDS = 150_000
 
 _lock = threading.Lock()
 
-app = FastAPI(title="-80C Freezer Inventory", version="1.1")
+app = FastAPI(title="-80C Freezer Inventory", version="1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,36 +70,114 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------- storage
-def _connect() -> sqlite3.Connection:
+# ---------------------------------------------------------------- registry
+def _reg() -> sqlite3.Connection:
+    """实验室注册表（库名/密码哈希、IP 绑定、登录令牌）。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB_PATH, check_same_thread=False)
+    c = sqlite3.connect(REGISTRY_PATH, check_same_thread=False)
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS labs ("
+        "id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, "
+        "salt TEXT, pw_hash TEXT, created_at REAL)"
+    )
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS ip_binds ("
+        "ip TEXT PRIMARY KEY, lab_id TEXT NOT NULL, updated_at REAL)"
+    )
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS tokens ("
+        "token TEXT PRIMARY KEY, lab_id TEXT NOT NULL, created_at REAL)"
+    )
+    return c
+
+
+def _hash_pw(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ROUNDS
+    ).hex()
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "0.0.0.0"
+
+
+def _issue_token(lab_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    with _lock, _reg() as c:
+        c.execute(
+            "INSERT INTO tokens(token, lab_id, created_at) VALUES(?,?,?)",
+            (token, lab_id, time.time()),
+        )
+    return token
+
+
+def _bind_ip(ip: str, lab_id: str) -> None:
+    with _lock, _reg() as c:
+        c.execute(
+            "INSERT INTO ip_binds(ip, lab_id, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(ip) DO UPDATE SET lab_id=excluded.lab_id, updated_at=excluded.updated_at",
+            (ip, lab_id, time.time()),
+        )
+
+
+def _auth(request: Request) -> Optional[dict]:
+    """鉴权：先认自定义头令牌，再认 IP 绑定。返回 {id,name} 或 None。
+
+    注意：不能用标准 Authorization 头——ModelScope/阿里云平台网关会占用该头
+    （带 Bearer 的请求在网关层直接 403「不支持通过 SDK Token 直接访问」），
+    故令牌统一走 X-Lab-Token 自定义请求头。
+    """
+    token = (request.headers.get("x-lab-token", "") or "").strip()
+    if token:
+        with _reg() as c:
+            row = c.execute(
+                "SELECT l.id, l.name FROM tokens t JOIN labs l ON l.id = t.lab_id "
+                "WHERE t.token = ?",
+                (token,),
+            ).fetchone()
+        if row:
+            return {"id": row[0], "name": row[1], "token": token}
+    ip = _client_ip(request)
+    with _reg() as c:
+        row = c.execute(
+            "SELECT l.id, l.name FROM ip_binds b JOIN labs l ON l.id = b.lab_id "
+            "WHERE b.ip = ?",
+            (ip,),
+        ).fetchone()
+    if row:
+        return {"id": row[0], "name": row[1], "token": ""}
+    return None
+
+
+def _require_lab(request: Request) -> dict:
+    lab = _auth(request)
+    if lab is None:
+        raise HTTPException(status_code=401, detail="请先创建或加入实验室")
+    return lab
+
+
+# ---------------------------------------------------------------- per-lab storage
+def _lab_dir(lab_id: str) -> Path:
+    return LABS_DIR / lab_id
+
+
+def _connect_lab(lab_id: str) -> sqlite3.Connection:
+    d = _lab_dir(lab_id)
+    d.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(d / "freezer.db", check_same_thread=False)
     c.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
     return c
 
 
-def _pg():
-    """Postgres 连接（psycopg3）。仅在设置了 DATABASE_URL 时使用。"""
-    import psycopg  # 延迟导入，本地 SQLite 模式无需安装
-
-    conn = psycopg.connect(DATABASE_URL, autocommit=True)
-    conn.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS backups ("
-        "id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ DEFAULT now(), "
-        "rev INTEGER, doc TEXT)"
-    )
-    return conn
-
-
-def _load_doc() -> Optional[dict]:
-    if DATABASE_URL:
-        with _pg() as c:
-            row = c.execute("SELECT v FROM kv WHERE k='doc'").fetchone()
-    else:
-        with _lock:
-            with _connect() as c:
-                row = c.execute("SELECT v FROM kv WHERE k='doc'").fetchone()
+def _load_doc(lab_id: str) -> Optional[dict]:
+    db_path = _lab_dir(lab_id) / "freezer.db"
+    if not db_path.exists():
+        return None
+    with _lock, _connect_lab(lab_id) as c:
+        row = c.execute("SELECT v FROM kv WHERE k='doc'").fetchone()
     if not row:
         return None
     try:
@@ -87,48 +186,26 @@ def _load_doc() -> Optional[dict]:
         return None
 
 
-def _save_doc(doc: dict) -> None:
-    payload = json.dumps(doc, ensure_ascii=False)
-    if DATABASE_URL:
-        with _pg() as c:
-            c.execute(
-                "INSERT INTO kv(k, v) VALUES('doc', %s) "
-                "ON CONFLICT(k) DO UPDATE SET v = EXCLUDED.v",
-                (payload,),
-            )
-    else:
-        with _lock:
-            with _connect() as c:
-                c.execute(
-                    "INSERT INTO kv(k, v) VALUES('doc', ?) "
-                    "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-                    (payload,),
-                )
+def _save_doc(lab_id: str, doc: dict) -> None:
+    with _lock, _connect_lab(lab_id) as c:
+        c.execute(
+            "INSERT INTO kv(k, v) VALUES('doc', ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            (json.dumps(doc, ensure_ascii=False),),
+        )
 
 
-def _write_backup(doc: dict) -> None:
+def _write_backup(lab_id: str, doc: dict) -> None:
     """每次成功保存后落一份快照，防止误操作/覆盖导致数据丢失。"""
     try:
-        if DATABASE_URL:
-            # Postgres 模式：快照写入数据库表，随库永久保存
-            with _pg() as c:
-                c.execute(
-                    "INSERT INTO backups(rev, doc) VALUES(%s, %s)",
-                    (doc.get("rev", 0), json.dumps(doc, ensure_ascii=False)),
-                )
-                c.execute(
-                    "DELETE FROM backups WHERE id NOT IN "
-                    "(SELECT id FROM backups ORDER BY id DESC LIMIT %s)",
-                    (BACKUP_KEEP,),
-                )
-            return
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        bdir = _lab_dir(lab_id) / "backups"
+        bdir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = BACKUP_DIR / f"freezer-{stamp}-r{doc['rev']}.json"
+        path = bdir / f"freezer-{stamp}-r{doc['rev']}.json"
         path.write_text(
             json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8"
         )
-        olds = sorted(BACKUP_DIR.glob("freezer-*.json"))
+        olds = sorted(bdir.glob("freezer-*.json"))
         for stale in olds[:-BACKUP_KEEP]:
             try:
                 stale.unlink()
@@ -138,6 +215,33 @@ def _write_backup(doc: dict) -> None:
         pass  # 备份失败不影响主流程
 
 
+# ---------------------------------------------------------------- legacy migration
+def _migrate_legacy() -> None:
+    """旧版单库 freezer.db 迁移为待认领实验室「默认实验室」（首次访问者设置密码）。"""
+    with _lock:
+        with _reg() as c:
+            n = c.execute("SELECT COUNT(*) FROM labs").fetchone()[0]
+        if n or not LEGACY_DB_PATH.exists():
+            return
+        lab_id = "legacy"
+        d = _lab_dir(lab_id)
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(LEGACY_DB_PATH), str(d / "freezer.db"))
+        if LEGACY_BACKUP_DIR.exists():
+            try:
+                shutil.move(str(LEGACY_BACKUP_DIR), str(d / "backups"))
+            except OSError:
+                pass
+        with _reg() as c:
+            c.execute(
+                "INSERT INTO labs(id, name, salt, pw_hash, created_at) VALUES(?,?,?,?,?)",
+                (lab_id, "默认实验室", None, None, time.time()),
+            )
+
+
+_migrate_legacy()
+
+
 # ---------------------------------------------------------------- models
 class SaveBody(BaseModel):
     rev: Optional[int] = None
@@ -145,15 +249,169 @@ class SaveBody(BaseModel):
     db: dict
 
 
-# ---------------------------------------------------------------- routes
+class LabBody(BaseModel):
+    name: str = ""
+    password: str = ""
+
+
+class ClaimBody(BaseModel):
+    id: str
+    name: str = ""
+    password: str = ""
+
+
+# ---------------------------------------------------------------- lab routes
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "rev": (_load_doc() or {}).get("rev", 0)}
+    with _reg() as c:
+        n = c.execute("SELECT COUNT(*) FROM labs").fetchone()[0]
+    return {"ok": True, "labs": n}
 
 
+@app.get("/api/session")
+def get_session(request: Request) -> dict:
+    """当前浏览器/IP 是否已属于某个实验室；未登录时顺带返回待认领的旧库。"""
+    lab = _auth(request)
+    if lab:
+        return {"lab": {"id": lab["id"], "name": lab["name"]}}
+    with _reg() as c:
+        row = c.execute(
+            "SELECT id, name FROM labs WHERE pw_hash IS NULL"
+        ).fetchone()
+    claim = {"id": row[0], "name": row[1]} if row else None
+    return {"lab": None, "claim": claim}
+
+
+@app.get("/api/labs")
+def list_labs() -> dict:
+    """公开列出实验室名（加入时让用户点选）；不泄露任何其他信息。"""
+    with _reg() as c:
+        rows = c.execute(
+            "SELECT name FROM labs WHERE pw_hash IS NOT NULL ORDER BY created_at"
+        ).fetchall()
+    return {"labs": [r[0] for r in rows]}
+
+
+def _admit(lab_row, request: Request) -> dict:
+    ip = _client_ip(request)
+    _bind_ip(ip, lab_row[0])
+    token = _issue_token(lab_row[0])
+    return {"token": token, "lab": {"id": lab_row[0], "name": lab_row[1]}}
+
+
+@app.post("/api/labs/create")
+def create_lab(body: LabBody, request: Request) -> Any:
+    name = (body.name or "").strip()
+    pw = body.password or ""
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写实验室名称")
+    if len(name) > 40:
+        raise HTTPException(status_code=400, detail="实验室名称最长 40 个字")
+    if len(pw) < 4:
+        raise HTTPException(status_code=400, detail="密码至少 4 位")
+    lab_id = "lab_" + secrets.token_hex(6)
+    salt = secrets.token_hex(16)
+    try:
+        with _lock, _reg() as c:
+            exists = c.execute("SELECT 1 FROM labs WHERE name = ?", (name,)).fetchone()
+            if exists:
+                raise HTTPException(status_code=409, detail="实验室名称已存在，请换一个或直接加入")
+            c.execute(
+                "INSERT INTO labs(id, name, salt, pw_hash, created_at) VALUES(?,?,?,?,?)",
+                (lab_id, name, salt, _hash_pw(pw, salt), time.time()),
+            )
+    except HTTPException:
+        raise
+    # 预建实验室目录（空库；前端首次 GET 404 后会写入种子数据）
+    _lab_dir(lab_id).mkdir(parents=True, exist_ok=True)
+    with _reg() as c:
+        row = c.execute("SELECT id, name FROM labs WHERE id = ?", (lab_id,)).fetchone()
+    return _admit(row, request)
+
+
+@app.post("/api/labs/join")
+def join_lab(body: LabBody, request: Request) -> Any:
+    name = (body.name or "").strip()
+    pw = body.password or ""
+    if not name or not pw:
+        raise HTTPException(status_code=400, detail="请填写实验室名称和密码")
+    with _reg() as c:
+        row = c.execute(
+            "SELECT id, name, salt, pw_hash FROM labs WHERE name = ?", (name,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="没有这个实验室，请检查名称（可点列表查看现有实验室）")
+    lab_id, lab_name, salt, pw_hash = row
+    if pw_hash is None:
+        raise HTTPException(status_code=403, detail="该实验室的数据尚未被认领，请先设置密码")
+    if not secrets.compare_digest(pw_hash, _hash_pw(pw, salt)):
+        raise HTTPException(status_code=403, detail="密码不正确")
+    return _admit((lab_id, lab_name), request)
+
+
+@app.post("/api/labs/claim")
+def claim_lab(body: ClaimBody, request: Request) -> Any:
+    """认领旧版迁移过来的无密码实验室：只能认领一次。"""
+    name = (body.name or "").strip() or "默认实验室"
+    pw = body.password or ""
+    if len(name) > 40:
+        raise HTTPException(status_code=400, detail="实验室名称最长 40 个字")
+    if len(pw) < 4:
+        raise HTTPException(status_code=400, detail="密码至少 4 位")
+    salt = secrets.token_hex(16)
+    with _lock, _reg() as c:
+        row = c.execute(
+            "SELECT id, name FROM labs WHERE id = ? AND pw_hash IS NULL", (body.id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="没有待认领的实验室（可能已被认领）")
+        dup = c.execute("SELECT 1 FROM labs WHERE name = ? AND id <> ?", (name, body.id)).fetchone()
+        if dup:
+            raise HTTPException(status_code=409, detail="实验室名称已存在，请换一个")
+        c.execute(
+            "UPDATE labs SET name = ?, salt = ?, pw_hash = ? WHERE id = ?",
+            (name, salt, _hash_pw(pw, salt), body.id),
+        )
+    return _admit((body.id, name), request)
+
+
+@app.post("/api/labs/leave")
+def leave_lab(request: Request) -> dict:
+    """解除当前 IP 的自动加入并作废本次令牌（切换实验室用）。"""
+    lab = _auth(request)
+    ip = _client_ip(request)
+    with _lock, _reg() as c:
+        c.execute("DELETE FROM ip_binds WHERE ip = ?", (ip,))
+        if lab and lab.get("token"):
+            c.execute("DELETE FROM tokens WHERE token = ?", (lab["token"],))
+    return {"ok": True}
+
+
+@app.post("/api/labs/dissolve")
+def dissolve_lab(body: LabBody, request: Request) -> dict:
+    """解散当前实验室（需再次输入密码）：删除注册表记录、全部令牌/IP 绑定与数据目录。"""
+    lab = _require_lab(request)
+    pw = body.password or ""
+    with _reg() as c:
+        row = c.execute("SELECT salt, pw_hash FROM labs WHERE id = ?", (lab["id"],)).fetchone()
+    if not row or not row[1]:
+        raise HTTPException(status_code=404, detail="实验室不存在")
+    salt, pw_hash = row
+    if not secrets.compare_digest(pw_hash, _hash_pw(pw, salt)):
+        raise HTTPException(status_code=403, detail="密码不正确")
+    with _lock, _reg() as c:
+        c.execute("DELETE FROM tokens WHERE lab_id = ?", (lab["id"],))
+        c.execute("DELETE FROM ip_binds WHERE lab_id = ?", (lab["id"],))
+        c.execute("DELETE FROM labs WHERE id = ?", (lab["id"],))
+    shutil.rmtree(_lab_dir(lab["id"]), ignore_errors=True)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- data routes
 @app.get("/api/db")
-def get_db() -> dict:
-    doc = _load_doc()
+def get_db(request: Request) -> dict:
+    lab = _require_lab(request)
+    doc = _load_doc(lab["id"])
     if doc is None:
         # 尚未初始化：前端收到 404 后会用种子数据 POST/PUT 上来
         raise HTTPException(status_code=404, detail="数据库为空，等待前端初始化")
@@ -161,8 +419,10 @@ def get_db() -> dict:
 
 
 @app.put("/api/db")
-def put_db(body: SaveBody = Body(...)) -> Any:
-    cur = _load_doc()
+def put_db(request: Request, body: SaveBody = Body(...)) -> Any:
+    lab = _require_lab(request)
+    lab_id = lab["id"]
+    cur = _load_doc(lab_id)
     cur_rev = cur["rev"] if cur else 0
 
     # 乐观并发校验：rev 不一致且未强制覆盖 -> 409 + 服务器当前数据
@@ -177,11 +437,327 @@ def put_db(body: SaveBody = Body(...)) -> Any:
         )
 
     next_doc = {"rev": cur_rev + 1, "db": body.db}
-    _save_doc(next_doc)
-    _write_backup(next_doc)
+    _save_doc(lab_id, next_doc)
+    _write_backup(lab_id, next_doc)
     return {"rev": next_doc["rev"]}
+
+
+# ---------------------------------------------------------------- excel 多 sheet 解析
+# 表头别名（中英文），与前端 BULK_ALIASES 保持一致
+_EXCEL_HEADERS = {
+    "pos": ["孔位", "位置", "position", "pos", "well", "坐标"],
+    "strain": ["菌种", "菌株", "strain"],
+    "plasmid": ["质粒", "plasmid"],
+    "keeper": ["保存人", "操作人", "keeper", "operator"],
+    "date": ["日期", "保存日期", "存入日期", "date", "stored date"],
+    "color": ["类型", "保菌管类型", "管型", "管盖颜色", "颜色", "type", "tube type", "color", "cap color"],
+    "note": ["备注", "说明", "note", "remark"],
+}
+
+
+def _cell_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, datetime.datetime):
+        return v.strftime("%Y-%m-%d")
+    if isinstance(v, (int, float)):
+        if float(v).is_integer():
+            return str(int(v))
+        return str(v)
+    s = str(v).strip()
+    if s == "空":
+        return ""  # 质粒"空"=无质粒
+    return s
+
+
+def _date_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, datetime.datetime):
+        return v.strftime("%Y-%m-%d")
+    s = str(v).strip()
+    if s in ("", "？", "?"):
+        return ""
+    if re.fullmatch(r"\d{3,4}", s):  # 纯年份 -> YYYY-01-01
+        return s + "-01-01"
+    return s
+
+
+def _parse_col_label(s: str) -> Optional[int]:
+    """A->0, B->1, ..., Z->25, AA->26 ..."""
+    s = s.strip().upper()
+    if not s or not s.isalpha():
+        return None
+    n = 0
+    for ch in s:
+        n = n * 26 + (ord(ch) - 64)
+    return n - 1
+
+
+def _col_label_name(idx: int) -> str:
+    """0->A, 25->Z, 26->AA（_parse_col_label 的逆函数）。"""
+    s = ""
+    idx = int(idx)
+    while idx >= 0:
+        s = chr(65 + idx % 26) + s
+        idx = idx // 26 - 1
+    return s
+
+
+def _parse_position(s: str):
+    s = str(s or "").strip().upper()
+    m = re.match(r"^([A-Z]+)0*(\d+)$", s)
+    if not m:
+        return None
+    col = _parse_col_label(m[1])
+    row = int(m[2]) - 1
+    if col is None or row < 0:
+        return None
+    return row, col
+
+
+def _parse_sheet_rows(title: str, rows: list) -> dict:
+    """通用：按表头别名识别列，产出 {name, rows, cols, wells}。
+    rows 元素为一行单元格（None/str/int/float/datetime），openpyxl 与内置解析器共用。"""
+    if not rows:
+        return {"name": title, "rows": 0, "cols": 0, "wells": []}
+
+    # 识别表头：第一行是否包含已知列名
+    first = [str(c or "").strip() for c in rows[0]]
+    col_idx = {}
+    has_header = False
+    for key, aliases in _EXCEL_HEADERS.items():
+        for i, h in enumerate(first):
+            if h.lower() in [a.lower() for a in aliases]:
+                col_idx[key] = i
+                has_header = True
+                break
+    if not has_header or "pos" not in col_idx:
+        col_idx = {"pos": 0, "strain": 1, "plasmid": 2, "keeper": 3, "date": 4, "color": 5, "note": 6}
+        data_rows = rows
+    else:
+        data_rows = rows[1:]
+
+    wells = []
+    max_row = 0
+    max_col = 0
+    for r in data_rows:
+        if not r:
+            continue
+        pos_raw = r[col_idx["pos"]] if col_idx["pos"] < len(r) else None
+        if pos_raw is None:
+            continue
+        parsed = _parse_position(str(pos_raw))
+        if parsed is None:
+            continue
+        row_idx, col_idx_pos = parsed
+        strain = _cell_str(r[col_idx["strain"]] if col_idx["strain"] < len(r) else None)
+        plasmid = _cell_str(r[col_idx["plasmid"]] if col_idx["plasmid"] < len(r) else None)
+        # 菌名+质粒都空则跳过
+        if not strain and not plasmid:
+            continue
+        keeper = _cell_str(r[col_idx["keeper"]] if col_idx["keeper"] < len(r) else None)
+        date = _date_str(r[col_idx["date"]] if col_idx["date"] < len(r) else None)
+        color = _cell_str(r[col_idx["color"]] if col_idx["color"] < len(r) else None)
+        note = _cell_str(r[col_idx["note"]] if col_idx["note"] < len(r) else None)
+        wells.append({
+            "pos": _col_label_name(col_idx_pos) + str(row_idx + 1),
+            "strain": strain,
+            "plasmid": plasmid,
+            "keeper": keeper,
+            "date": date,
+            "color": color,
+            "note": note,
+        })
+        max_row = max(max_row, row_idx + 1)
+        max_col = max(max_col, col_idx_pos + 1)
+
+    return {"name": title, "rows": max_row, "cols": max_col, "wells": wells}
+
+
+def _parse_sheet(ws) -> dict:
+    """openpyxl 工作表适配层。"""
+    return _parse_sheet_rows(ws.title, list(ws.iter_rows(values_only=True)))
+
+
+# ---------------------------------------------------------------- 无 openpyxl 时的内置 xlsx 解析器
+_XLSX_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_XLSX_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+# Excel 内置日期/时间格式 numFmtId
+_BUILTIN_DATE_FMTS = {
+    14, 15, 16, 17, 18, 19, 20, 21, 22,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+    45, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+}
+
+
+def _xlsx_serial_to_dt(serial: float, date1904: bool) -> datetime.datetime:
+    """Excel 日期序列号 -> datetime（Windows 1900 体系以 1899-12-30 为零点）。"""
+    base = datetime.datetime(1904, 1, 1) if date1904 else datetime.datetime(1899, 12, 30)
+    return base + datetime.timedelta(days=float(serial))
+
+
+def _xlsx_is_date_fmt(code: str) -> bool:
+    """判断自定义 numFmt 的格式码是否表示日期/时间（去掉颜色/区域/字面量后看日期字母）。"""
+    s = re.sub(r"\[[^\]]*\]", "", code or "")   # [Red]、[$-409] 等
+    s = re.sub(r'"[^"]*"', "", s)               # 引号包裹的字面文本
+    s = re.sub(r"\\.", "", s).lower()           # 反斜杠转义字符
+    return bool(re.search(r"[ymdhs]", s))
+
+
+def _xlsx_stdlib(raw: bytes) -> list:
+    """纯标准库解析 .xlsx（zip+XML）。返回 [(sheet名, 行列表)]。
+    行为尽量贴近 openpyxl iter_rows(values_only=True)：空单元格补 None、
+    共享/内联字符串还原、日期序列号转 datetime、整数去 .0。"""
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        names = set(zf.namelist())
+
+        # 1) 共享字符串表（含富文本拼接）
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in names:
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall(f"{{{_XLSX_MAIN}}}si"):
+                shared.append("".join(t.text or "" for t in si.iter(f"{{{_XLSX_MAIN}}}t")))
+
+        # 2) 样式表：找出"日期型"单元格样式序号
+        date_xfs: set[int] = set()
+        custom_date_ids: set[int] = set()
+        if "xl/styles.xml" in names:
+            st = ET.fromstring(zf.read("xl/styles.xml"))
+            fmts = st.find(f"{{{_XLSX_MAIN}}}numFmts")
+            if fmts is not None:
+                for nf in fmts.findall(f"{{{_XLSX_MAIN}}}numFmt"):
+                    fid = int(nf.get("numFmtId", 0))
+                    if _xlsx_is_date_fmt(nf.get("formatCode", "")):
+                        custom_date_ids.add(fid)
+            xfs = st.find(f"{{{_XLSX_MAIN}}}cellXfs")
+            if xfs is not None:
+                for i, xf in enumerate(xfs.findall(f"{{{_XLSX_MAIN}}}xf")):
+                    fid = int(xf.get("numFmtId", 0))
+                    if fid in _BUILTIN_DATE_FMTS or fid in custom_date_ids:
+                        date_xfs.add(i)
+
+        # 3) 工作簿：日期系统 + sheet 顺序/名称/r:id -> 文件路径
+        wb = ET.fromstring(zf.read("xl/workbook.xml"))
+        wb_pr = wb.find(f"{{{_XLSX_MAIN}}}workbookPr")
+        date1904 = wb_pr is not None and wb_pr.get("date1904") in ("1", "true")
+        rid_to_target: dict[str, str] = {}
+        rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        for rel in rels:
+            rid_to_target[rel.get("Id", "")] = rel.get("Target", "")
+        sheets_meta = []
+        sheets_el = wb.find(f"{{{_XLSX_MAIN}}}sheets")
+        if sheets_el is not None:
+            for sh in sheets_el.findall(f"{{{_XLSX_MAIN}}}sheet"):
+                rid = sh.get(f"{{{_XLSX_REL}}}id", "")
+                target = rid_to_target.get(rid, "")
+                path = target.lstrip("/") if target.startswith("/") else "xl/" + target
+                sheets_meta.append((sh.get("name", ""), path))
+
+        # 4) 逐 sheet 读行
+        out = []
+        for name, path in sheets_meta:
+            if path not in names:
+                continue
+            root = ET.fromstring(zf.read(path))
+            sd = root.find(f"{{{_XLSX_MAIN}}}sheetData")
+            row_map: dict[int, list] = {}
+            max_row = -1
+            fallback_r = 0
+            for row_el in (sd.findall(f"{{{_XLSX_MAIN}}}row") if sd is not None else []):
+                try:
+                    rnum = int(row_el.get("r", "")) - 1
+                except ValueError:
+                    rnum = fallback_r
+                fallback_r += 1
+                vals: dict[int, Any] = {}
+                max_col = -1
+                for c in row_el.findall(f"{{{_XLSX_MAIN}}}c"):
+                    cm = re.match(r"^([A-Z]+)", c.get("r", "").upper())
+                    ci = _parse_col_label(cm.group(1)) if cm else None
+                    if ci is None:
+                        continue
+                    ctype = c.get("t")
+                    v_el = c.find(f"{{{_XLSX_MAIN}}}v")
+                    val: Any = None
+                    if ctype == "s":  # 共享字符串
+                        if v_el is not None and v_el.text is not None:
+                            idx = int(v_el.text)
+                            val = shared[idx] if 0 <= idx < len(shared) else ""
+                    elif ctype == "inlineStr":
+                        is_el = c.find(f"{{{_XLSX_MAIN}}}is")
+                        if is_el is not None:
+                            val = "".join(t.text or "" for t in is_el.iter(f"{{{_XLSX_MAIN}}}t"))
+                    elif ctype == "b":
+                        val = (v_el is not None and v_el.text == "1")
+                    elif ctype in ("str", "e"):
+                        val = v_el.text if v_el is not None else None
+                    elif v_el is not None and v_el.text is not None:
+                        txt = v_el.text
+                        try:
+                            num = float(txt)
+                            sidx = int(c.get("s", -1))
+                            if sidx in date_xfs:
+                                val = _xlsx_serial_to_dt(num, date1904)
+                            elif num.is_integer():
+                                val = int(num)
+                            else:
+                                val = num
+                        except ValueError:
+                            val = txt
+                    vals[ci] = val
+                    max_col = max(max_col, ci)
+                row_map[rnum] = [vals.get(i) for i in range(max_col + 1)]
+                max_row = max(max_row, rnum)
+            rows = [row_map.get(i, []) for i in range(max_row + 1)]
+            out.append((name, rows))
+        return out
+
+
+@app.post("/api/parse-excel")
+def parse_excel(body: dict = Body(...)) -> Any:
+    """解析上传的 Excel（.xlsx），每个 sheet 作为一个盒子，自动识别行列数。
+    入参：{data: base64字符串, name: 文件名}
+    返回：{sheets: [{name, rows, cols, wells:[{pos,strain,plasmid,keeper,date,color,note}]}]}
+    openpyxl 可用时优先使用；不可用时自动降级为内置标准库（zipfile+XML）解析器。"""
+    data = body.get("data")
+    if not data:
+        raise HTTPException(status_code=400, detail="缺少文件内容")
+    try:
+        raw = base64.b64decode(data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="文件编码错误")
+    try:
+        if openpyxl is not None:
+            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+            sheets = [_parse_sheet(ws) for ws in wb.worksheets]
+        else:
+            # 部署环境缺少 openpyxl 时的兜底：.xlsx 本质是 zip+XML，标准库即可解析
+            sheets = [_parse_sheet_rows(title, rows) for title, rows in _xlsx_stdlib(raw)]
+    except (zipfile.BadZipFile, KeyError, ET.ParseError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail="无法解析 Excel 文件（仅支持标准 .xlsx 格式，旧版 .xls 请先另存为 .xlsx）：" + str(e),
+        )
+    except Exception as e:  # noqa: BLE001 - 给前端可读错误，不抛 500
+        raise HTTPException(status_code=400, detail="无法解析 Excel 文件：" + str(e))
+    return {"sheets": sheets}
 
 
 # ---------------------------------------------------------------- static
 # 注意：挂在 "/" 之前已注册的 /api 路由优先生效
 app.mount("/", StaticFiles(directory=str(BASE_DIR / "static"), html=True), name="static")
+
+# ---------------------------------------------------------------- entrypoint
+# 同时兼容三种云端启动方式：
+#   1) python app.py            （平台默认入口）
+#   2) uvicorn app:app          （start.sh / start.bat）
+# 端口优先取平台注入的 PORT 环境变量，未设置时本地默认 8000
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8000")),
+    )
