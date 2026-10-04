@@ -220,6 +220,7 @@ ul{margin:0;padding:0;list-style:none}
   display:grid;place-items:center;color:var(--ink-2);font-size:14px;line-height:1;transition:.14s;
 }
 .iconbtn:hover{background:var(--brand-soft);border-color:#cfe2f5;color:var(--brand)}
+.iconbtn:disabled{opacity:.35;cursor:default;background:transparent;border-color:transparent;pointer-events:none}
 .iconbtn.danger:hover{background:#fdecea;border-color:#f5c9c3;color:var(--danger)}
 
 /* SECTION: sidebar lists */
@@ -444,6 +445,7 @@ textarea ~ .input-clear-x{top:7px}
   background:var(--panel-2);position:sticky;bottom:0;flex-wrap:wrap;
 }
 .detail-foot .sp{margin-left:auto}
+.auto-status{flex:1 1 100%;font-size:12px;color:var(--ink-3);margin-bottom:4px;display:flex;align-items:center;gap:6px}
 
 /* SECTION: modal & toast */
 .backdrop{
@@ -461,6 +463,8 @@ textarea ~ .input-clear-x{top:7px}
 .modal .m-body{padding:0 16px 4px;font-size:13px;color:var(--ink-2)}
 .modal .m-body p{margin:0 0 9px}
 .modal .m-foot{display:flex;gap:8px;justify-content:flex-end;padding:14px 16px}
+.skip-incomplete{display:flex;align-items:center;gap:7px;margin-top:10px;font-size:12.5px;color:var(--ink-2);cursor:pointer;user-select:none}
+.skip-incomplete input{margin:0;width:15px;height:15px;flex:none;cursor:pointer}
 
 /* SECTION: 批量录入 CSV */
 .modal.bulk-modal{max-width:720px}
@@ -1362,7 +1366,8 @@ var ICONS = {
   "chevron-down":'<path d="m6 9 6 6 6-6"/>',
   "chevron-right":'<path d="m9 18 6-6-6-6"/>',
   moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
-  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>'
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  "undo-2":'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/>'
 };
 function icon(name, size){
   var s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1700,6 +1705,20 @@ var I18N = {
   "类型名称": "Type name",
   "删除类型": "Delete type",
   "保菌管类型（登记存菌时下拉选择，写入云端、所有设备同步）": "Tube types (chosen from a dropdown when storing; saved to cloud and synced to all devices)",
+  "个性化（仅保存在这台设备）": "Personalization (saved on this device only)",
+  "菌管信息编辑方式：": "How tube edits are saved:",
+  "自动保存（推荐）": "Auto-save (recommended)",
+  "在详情框里修改立即保存，没有保存按钮；右上角有撤回按钮，可逐步撤销": "Edits in the detail panel save instantly with no save button; use the undo button at the top right to revert step by step",
+  "手动保存": "Manual save",
+  "改完后点「保存修改」按钮才会生效": "Changes apply only after clicking the \"Save changes\" button",
+  "已切换为自动保存": "Switched to auto-save",
+  "已切换为手动保存": "Switched to manual save",
+  "撤回上一步修改": "Undo last change",
+  "修改后自动保存，可用右上角撤回按钮逐步撤销": "Edits are saved automatically; use the undo button at the top right to revert step by step",
+  "已撤回上一步修改": "Last change undone",
+  "已撤回": "Undone",
+  "待保存…": "Saving…",
+  "所有修改已保存": "All changes saved",
   "新类型名称，如：进口 2mL 冻存管": "New type name, e.g. imported 2 mL cryovial",
   "按保菌管类型分组着色（橙/绿/EP/返回样…），未选类型的单独一组": "Color by tube type (orange/green/EP/company sample…); wells without a type form one group",
   "删除类型只会把它从下拉中移除，已经登记为该类型的孔位记录不会被改动。": "Deleting a type only removes it from the dropdown; wells already recorded with that type are kept unchanged.",
@@ -1876,6 +1895,7 @@ var I18N = {
   "以下信息还没填写：": "Missing fields: ",
   "质粒（无质粒可填 -）": "Plasmid (use - if none)",
   "仍可直接登记，但后续搜索和查找时可能不方便。": "You can still register, but it may be harder to search and find later.",
+  "本次不再提醒（关闭页面后自动恢复）": "Don't remind again in this session (resets after closing the page)",
   "确认登记": "Register anyway",
   "补全信息": "Complete info",
   "登记菌种后可切换状态": "Toggle status after registering a strain",
@@ -2833,6 +2853,7 @@ function stSave(force){
     ];
     var miss = spec.filter(function(f){ return !f.val; });
     if (miss.length) {
+      if (incompleteSuppressed()) { stSave(true); return; }
       confirmIncomplete(miss, function(){ stSave(true); }, miss[0].id);
       return;
     }
@@ -3171,6 +3192,17 @@ var CHANGELOG = [
   {
     date: "2026-10-04",
     zh: [
+      "菌管信息编辑支持两种模式，可在「设置 → 个性化（仅本机）」中切换：① 自动保存（新默认）——在孔位详情框里修改日期/保存人/菌种/质粒/类型/备注后约 0.5 秒自动保存，不再有「保存修改」按钮，面板右上角新增撤回按钮（箭头图标），可逐步撤销最多 30 步，关闭面板前的最后改动也会自动落盘；② 手动保存——保留原来的「保存修改」按钮，点了才生效。新登记空格仍需点一次「登记这一格」；手机碰手环的存菌流程不受影响",
+      "登记弹窗「信息未填完整」新增「本次不再提醒（关闭页面后自动恢复）」勾选项，信息天然不全时不再每次打断"
+    ],
+    en: [
+      "Tube editing now offers two modes, switchable under Settings → Personalization (this device only): ① Auto-save (new default) — edits to date/keeper/strain/plasmid/type/note in the detail panel save ~0.5s after you stop typing, with no Save button; an undo button (curved arrow) at the top right reverts up to 30 steps, and pending edits are flushed when the panel closes. ② Manual save keeps the classic Save changes button. Registering a new empty well still takes one explicit click; the phone NFC storage flow is unchanged",
+      "The \"incomplete information\" dialog when registering a tube now has a \"Don't remind again in this session (resets after closing the page)\" checkbox for records whose fields are naturally incomplete"
+    ]
+  },
+  {
+    date: "2026-10-04",
+    zh: [
       "【紧急修复】修复加入/创建实验室后页面一直显示「无法连接服务器」、多数手机无法进入系统的问题：根因是云端平台网关占用了标准的 Authorization 认证请求头（浏览器一旦携带登录令牌，所有数据请求都会在网关层被直接拦截返回 403，根本到不了我们的服务器，与手机品牌、浏览器、网络均无关）。现把登录令牌改走自定义请求头 X-Lab-Token，已加入实验室的成员无需重新输入密码，刷新页面即可自动恢复；同时 401/403 时会自动清除失效令牌并回到实验室选择页重新加入，不再卡在错误页",
       "设置中新增「解散实验室」能力（接口）：解散需再次输入实验室密码，会删除该实验室的全部数据、登录令牌与自动加入绑定且不可恢复"
     ],
@@ -3361,6 +3393,47 @@ function openSettingsModal(){
   }
   renderOp();
   wrap.appendChild(opBox);
+
+  // 个性化（仅本机）：菌管信息编辑方式
+  var persBox = el("div", null, "");
+  persBox.style.cssText = "padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:var(--panel-2)";
+  persBox.appendChild(el("div", null, "个性化（仅保存在这台设备）"));
+  var persTitle = el("div", null, "菌管信息编辑方式：");
+  persTitle.style.cssText = "font-size:12px;color:#6b7e94;margin:8px 0 2px";
+  persBox.appendChild(persTitle);
+  var optAuto = el("div", null, "");
+  optAuto.style.cssText = "padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin:6px 0;cursor:pointer";
+  var optManual = el("div", null, "");
+  optManual.style.cssText = "padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin:6px 0;cursor:pointer";
+  function renderEditOpts(){
+    var m = getWellEditMode();
+    optAuto.style.borderColor = m === "auto" ? "var(--brand-2)" : "var(--line)";
+    optAuto.style.background = m === "auto" ? "var(--brand-soft)" : "var(--panel)";
+    optManual.style.borderColor = m === "manual" ? "var(--brand-2)" : "var(--line)";
+    optManual.style.background = m === "manual" ? "var(--brand-soft)" : "var(--panel)";
+    optAuto.innerHTML = ""; optManual.innerHTML = "";
+    optAuto.appendChild(el("div", null, (m === "auto" ? "\u25cf " : "\u25cb ") + "\u81ea\u52a8\u4fdd\u5b58\uff08\u63a8\u8350\uff09"));
+    var ah = el("div", null, "\u5728\u8be6\u60c5\u6846\u91cc\u4fee\u6539\u7acb\u5373\u4fdd\u5b58\uff0c\u6ca1\u6709\u4fdd\u5b58\u6309\u94ae\uff1b\u53f3\u4e0a\u89d2\u6709\u64a4\u56de\u6309\u94ae\uff0c\u53ef\u9010\u6b65\u64a4\u9500");
+    ah.style.cssText = "font-size:12px;color:var(--ink-3);margin-top:4px";
+    optAuto.appendChild(ah);
+    optManual.appendChild(el("div", null, (m === "manual" ? "\u25cf " : "\u25cb ") + "\u624b\u52a8\u4fdd\u5b58"));
+    var mh = el("div", null, "\u6539\u5b8c\u540e\u70b9\u300c\u4fdd\u5b58\u4fee\u6539\u300d\u6309\u94ae\u624d\u4f1a\u751f\u6548");
+    mh.style.cssText = "font-size:12px;color:var(--ink-3);margin-top:4px";
+    optManual.appendChild(mh);
+  }
+  optAuto.addEventListener("click", function(){
+    setWellEditMode("auto"); renderEditOpts();
+    if (state.selectedWell) renderAll();
+    toast("已切换为自动保存", "ok");
+  });
+  optManual.addEventListener("click", function(){
+    setWellEditMode("manual"); renderEditOpts();
+    if (state.selectedWell) renderAll();
+    toast("已切换为手动保存", "ok");
+  });
+  persBox.appendChild(optAuto); persBox.appendChild(optManual);
+  renderEditOpts();
+  wrap.appendChild(persBox);
 
   // 保菌管类型（写入云端，所有设备同步；可增删）
   function countWellsByType(){
@@ -4084,6 +4157,7 @@ function openWell(pos){
   if (window.innerWidth <= 1240 && !state.locateMode) document.getElementById("detail").classList.add("open");
 }
 function closeDetail(){
+  flushPendingAutoSave(); // 自动模式下，关闭面板前把 500ms 内的最后改动存掉
   state.selectedWell = null;
   state.locateMode = false;
   document.body.classList.remove("locate");
@@ -4169,8 +4243,10 @@ function buildLocateBanner(rack, box, well, label){
   return bn;
 }
 function renderDetail(){
+  flushPendingAutoSave(); // 切换到另一格/整体重绘前，先把上一面板 500ms 内未落盘的改动存掉
   var host = document.getElementById("detail");
   host.innerHTML = "";
+  autoEdit.t1 = null; autoEdit.badge = null; autoEdit.statusEl = null; autoEdit.undoBtn = null;
   var box = getBox();
   var rack = getRack();
   if (!box || !state.selectedWell) return;
@@ -4190,6 +4266,18 @@ function renderDetail(){
   var t2 = el("div", "t2", rack.name + " / " + box.name + (well && well.takenOut ? " · 暂时取出中" : ""));
   ttl.appendChild(t2);
   head.appendChild(ttl);
+  var autoMode = well && getWellEditMode() === "auto";
+  if (autoMode) {
+    var undoBtn = el("button", "iconbtn");
+    undoBtn.type = "button";
+    undoBtn.title = "撤回上一步修改";
+    undoBtn.appendChild(icon("undo-2", "sm"));
+    undoBtn.disabled = true;
+    undoBtn.addEventListener("click", undoAutoEdit);
+    head.appendChild(undoBtn);
+    autoEdit.undoBtn = undoBtn;
+    autoEdit.t1 = t1; autoEdit.badge = badge;
+  }
   var x = el("button", "iconbtn"); x.type = "button"; x.title = "关闭"; x.appendChild(icon("x", "sm"));
   x.addEventListener("click", closeDetail);
   head.appendChild(x);
@@ -4242,7 +4330,7 @@ function renderDetail(){
   colorSel.id = "fColor";
   var curType = well ? ((well.color || "").trim()) : "";
   fillTypeOptions(colorSel, curType);
-  wireTypeSelect(colorSel, null);
+  wireTypeSelect(colorSel, autoMode ? scheduleAutoSave : null);
   fcol.appendChild(colorSel);
   form.appendChild(fcol);
 
@@ -4305,11 +4393,25 @@ function renderDetail(){
   host.appendChild(form);
 
   var foot = el("div", "detail-foot");
-  var primary = el("button", "btn primary", well ? "保存修改" : "登记这一格");
-  primary.type = "button";
-  primary.dataset.primaryAction = well ? "save-well" : "create-well";
-  primary.addEventListener("click", function(){ saveWell(!!well); });
-  foot.appendChild(primary);
+  if (autoMode) {
+    var autoHint = el("div", "auto-status", "修改后自动保存，可用右上角撤回按钮逐步撤销");
+    foot.appendChild(autoHint);
+    autoEdit.statusEl = autoHint;
+  }
+  if (well && !autoMode) {
+    var primary = el("button", "btn primary", "保存修改");
+    primary.type = "button";
+    primary.dataset.primaryAction = "save-well";
+    primary.addEventListener("click", function(){ saveWell(!!well); });
+    foot.appendChild(primary);
+  }
+  if (!well) {
+    var createBtn = el("button", "btn primary", "登记这一格");
+    createBtn.type = "button";
+    createBtn.dataset.primaryAction = "create-well";
+    createBtn.addEventListener("click", function(){ saveWell(false); });
+    foot.appendChild(createBtn);
+  }
   if (well) {
     var del = el("button", "btn danger sp", "清空此格");
     del.type = "button";
@@ -4322,6 +4424,7 @@ function renderDetail(){
     foot.appendChild(cl);
   }
   host.appendChild(foot);
+  if (autoMode && well) bindAutoSave(well);
   Array.prototype.forEach.call(form.querySelectorAll("input[data-ac]"), function(i){ ensureClearX(i); });
 }
 function textField(label, id, value, ph, list){
@@ -4371,12 +4474,114 @@ function missingWellFields(v){
   if (!v.plasmid) miss.push({ name: "质粒（无质粒可填 -）", id: "fPlasmid" });
   return miss;
 }
+function incompleteSuppressed(){
+  try { return sessionStorage.getItem("freezer.skipIncomplete.v1") === "1"; } catch (e) { return false; }
+}
+function suppressIncomplete(){
+  try { sessionStorage.setItem("freezer.skipIncomplete.v1", "1"); } catch (e) {}
+}
+
+/* SECTION: 菌管详情编辑模式（自动保存 / 手动保存）与撤回 */
+var WELL_EDIT_KEY = "freezer.wellEditMode.v1"; // "auto"（默认）| "manual"
+function getWellEditMode(){
+  var m = "auto";
+  try { m = localStorage.getItem(WELL_EDIT_KEY) || "auto"; } catch (e) {}
+  return m === "manual" ? "manual" : "auto";
+}
+function setWellEditMode(m){
+  try { localStorage.setItem(WELL_EDIT_KEY, m === "manual" ? "manual" : "auto"); } catch (e) {}
+}
+var AUTO_FIELDS = [["fDate","date"],["fKeeper","keeper"],["fStrain","strain"],["fPlasmid","plasmid"],["fColor","color"],["fNote","note"]];
+var autoEdit = { timer:null, stack:[], last:null, t1:null, badge:null, statusEl:null, undoBtn:null };
+function snapWell6(w){
+  return { date:w.date||"", keeper:w.keeper||"", strain:w.strain||"",
+           plasmid:w.plasmid||"", color:w.color||"", note:w.note||"" };
+}
+function snapChanged(a,b){
+  return a.date!==b.date || a.keeper!==b.keeper || a.strain!==b.strain ||
+         a.plasmid!==b.plasmid || a.color!==b.color || a.note!==b.note;
+}
+function cancelAutoSaveTimer(){
+  if (autoEdit.timer){ clearTimeout(autoEdit.timer); autoEdit.timer = null; }
+}
+function reflectAutoSaved(w){
+  if (autoEdit.t1) autoEdit.t1.textContent = w.strain || "未填菌种";
+  if (autoEdit.badge) autoEdit.badge.style.background = cellColor(w);
+  renderSidebar(); renderStageHead(); renderLegend(); renderGrid();
+}
+function flushAutoSave(){
+  autoEdit.timer = null;
+  var w = currentWell();
+  if (!w) return;
+  var v = readForm();
+  var snap = { date:v.date, keeper:v.keeper, strain:v.strain, plasmid:v.plasmid, color:v.color, note:v.note };
+  if (!snapChanged(snap, autoEdit.last)) {
+    if (autoEdit.statusEl) autoEdit.statusEl.textContent = "所有修改已保存";
+    return;
+  }
+  autoEdit.stack.push(autoEdit.last);
+  if (autoEdit.stack.length > 30) autoEdit.stack.shift();
+  w.date = snap.date; w.keeper = snap.keeper; w.strain = snap.strain;
+  w.plasmid = snap.plasmid; w.color = snap.color; w.note = snap.note;
+  autoEdit.last = snap;
+  persist();
+  reflectAutoSaved(w);
+  if (autoEdit.undoBtn) autoEdit.undoBtn.disabled = false;
+  if (autoEdit.statusEl) autoEdit.statusEl.textContent = "已自动保存 " + nowStamp().slice(11);
+}
+function flushPendingAutoSave(){
+  if (autoEdit.timer){ autoEdit.timer = null; flushAutoSave(); }
+}
+function scheduleAutoSave(){
+  cancelAutoSaveTimer();
+  if (autoEdit.statusEl) autoEdit.statusEl.textContent = "待保存…";
+  autoEdit.timer = setTimeout(flushAutoSave, 500);
+}
+function bindAutoSave(well){
+  autoEdit.stack = [];
+  autoEdit.last = snapWell6(well);
+  ["fDate","fKeeper","fStrain","fPlasmid","fNote"].forEach(function(id){
+    var n = document.getElementById(id);
+    if (!n) return;
+    n.addEventListener("input", scheduleAutoSave);
+    n.addEventListener("change", scheduleAutoSave);
+  });
+  var col = document.getElementById("fColor");
+  if (col) col.addEventListener("change", scheduleAutoSave);
+}
+function undoAutoEdit(){
+  var w = currentWell();
+  if (!w || !autoEdit.stack.length) return;
+  cancelAutoSaveTimer();
+  var snap = autoEdit.stack.pop();
+  w.date = snap.date; w.keeper = snap.keeper; w.strain = snap.strain;
+  w.plasmid = snap.plasmid; w.color = snap.color; w.note = snap.note;
+  AUTO_FIELDS.forEach(function(pair){
+    var n = document.getElementById(pair[0]);
+    if (n) n.value = snap[pair[1]] || "";
+  });
+  autoEdit.last = snap;
+  persist();
+  reflectAutoSaved(w);
+  if (autoEdit.undoBtn) autoEdit.undoBtn.disabled = autoEdit.stack.length === 0;
+  if (autoEdit.statusEl) autoEdit.statusEl.textContent = "已撤回上一步修改";
+  toast("已撤回", "ok");
+}
 function confirmIncomplete(miss, onConfirm, focusId){
+  var row = el("label", "skip-incomplete");
+  var cb = el("input");
+  cb.type = "checkbox";
+  row.appendChild(cb);
+  row.appendChild(document.createTextNode("本次不再提醒（关闭页面后自动恢复）"));
   openModal("信息未填完整", [
     el("p", null, "以下信息还没填写：" + miss.map(function(m){ return m.name; }).join("、")),
-    el("p", null, "仍可直接登记，但后续搜索和查找时可能不方便。")
+    el("p", null, "仍可直接登记，但后续搜索和查找时可能不方便。"),
+    row
   ], [
-    { label: "确认登记", kind: "primary", fn: onConfirm },
+    { label: "确认登记", kind: "primary", fn: function(){
+      if (cb.checked) suppressIncomplete();
+      onConfirm();
+    } },
     { label: "补全信息", kind: "", fn: function(){
       if (focusId) { var e = document.getElementById(focusId); if (e) { e.scrollIntoView({ block: "center" }); e.focus(); } }
     } }
@@ -4394,7 +4599,7 @@ function saveWell(isEdit, force){
   var v = readForm();
   if (!force) {
     var miss = missingWellFields(v);
-    if (miss.length) {
+    if (miss.length && getWellEditMode() !== "auto" && !incompleteSuppressed()) {
       confirmIncomplete(miss, function(){ saveWell(isEdit, true); }, miss[0].id);
       return;
     }
@@ -4443,6 +4648,7 @@ function askClearWell(well, label){
   ], [
     { label: "取消", kind: "" },
     { label: "清空这一格", kind: "danger", fn: function(){
+      flushPendingAutoSave();
       var box = getBox();
       if (!box || !state.selectedWell) return;
       delete box.wells[String(state.selectedWell.pos)];
