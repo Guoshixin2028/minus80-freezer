@@ -445,6 +445,35 @@ textarea ~ .input-clear-x{top:7px}
 .tl-item .del{position:absolute;right:6px;top:6px;opacity:0}
 .tl-item:hover .del{opacity:1}
 .tl-empty{font-size:12px;color:var(--ink-3);padding:9px 2px}
+/* SECTION: audit log 改动日志 */
+.well-log{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.lg-item{
+  border:1px solid var(--line-soft);border-left:3px solid var(--ink-3);border-radius:8px;
+  background:var(--panel-2);padding:7px 10px;font-size:12px;
+}
+.lg-item.act-store{border-left-color:#2e8b57}
+.lg-item.act-edit{border-left-color:#2f7fd1}
+.lg-item.act-take{border-left-color:#e8912f}
+.lg-item.act-untake,.lg-item.act-clear,.lg-item.act-delrack,.lg-item.act-delbox,.lg-item.act-clearbox{border-left-color:#e0483b}
+.lg-item.act-import{border-left-color:#7d5ba6}
+.lg-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.lg-badge{font-size:10.5px;font-weight:700;color:#fff;border-radius:10px;padding:1px 8px;line-height:1.6;white-space:nowrap}
+.act-store .lg-badge{background:#2e8b57}
+.act-edit .lg-badge{background:#2f7fd1}
+.act-take .lg-badge{background:#e8912f}
+.act-untake .lg-badge,.act-clear .lg-badge,.act-delrack .lg-badge,.act-delbox .lg-badge,.act-clearbox .lg-badge{background:#e0483b}
+.act-import .lg-badge{background:#7d5ba6}
+.lg-who{font-weight:700;color:var(--ink-1)}
+.lg-time{color:var(--ink-3);font-size:11px;margin-left:auto;white-space:nowrap}
+.lg-text{color:var(--ink-1);margin-top:3px;word-break:break-word}
+.lg-loc{color:var(--ink-3);font-size:11px;margin-top:2px}
+.lg-diffs{margin-top:4px;display:flex;flex-direction:column;gap:2px}
+.lg-diff{font-size:11px;color:var(--ink-2);background:rgba(127,127,127,.12);border-radius:5px;padding:2px 7px;word-break:break-word}
+.lg-compact{padding:5px 8px}
+.lablog-ctl{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center}
+.lablog-search{flex:1;min-width:200px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px}
+.lablog-cnt{font-size:12px;color:var(--ink-3);margin-bottom:6px}
+.lablog-list{display:flex;flex-direction:column;gap:7px;max-height:54vh;overflow-y:auto;padding-right:4px}
 .take-form{padding:10px;border:1px dashed var(--line);border-radius:10px;background:var(--panel-2);margin-top:9px}
 .detail-foot{
   display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line-soft);
@@ -1371,6 +1400,77 @@ function todayStr(){
 function nowStamp(){
   var d = new Date();
   return todayStr() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+/* SECTION: audit log 改动日志（随 db JSON 云端同步，全实验室可见） */
+var WELL_LOG_MAX = 50;   // 单管最多保留 50 条
+var LAB_LOG_MAX = 1000;  // 实验室总日志最多 1000 条，超出淘汰最旧
+var LOG_FIELD_LABELS = { date:"日期", keeper:"保存人", strain:"菌种", plasmid:"质粒", color:"类型", note:"备注" };
+var LOG_ACT_LABELS = {
+  store:"存入", edit:"编辑", take:"取出", untake:"删取出记录", clear:"清空菌格",
+  "import":"批量导入", delrack:"删除铁架", delbox:"删除盒子", clearbox:"清空盒子"
+};
+function nowStampSec(){
+  var d = new Date();
+  function p(n){ return String(n).padStart(2, "0"); }
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " +
+         p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+function wellFieldDiffs(before, after){
+  var out = [];
+  ["date","keeper","strain","plasmid","color","note"].forEach(function(k){
+    var a = before ? (before[k] || "") : "";
+    var b = after ? (after[k] || "") : "";
+    if (a !== b) out.push({ f:k, from:a, to:b });
+  });
+  return out;
+}
+function locText(rack, box, posLabelStr){
+  var s = "";
+  if (rack) s += rack.name || "";
+  if (box) s += (s ? " / " : "") + (box.name || "");
+  if (posLabelStr) s += " / " + posLabelStr;
+  return s;
+}
+function curLocText(pos){
+  var rk = getRack(), bx = getBox();
+  if (!rk || !bx) return "";
+  return locText(rk, bx, pos == null ? "" : posLabel(bx, pos));
+}
+function normLogEntry(e){
+  e = (e && typeof e === "object") ? e : {};
+  return {
+    id: typeof e.id === "string" && e.id ? e.id : uid("lg"),
+    t: toStr(e.t),
+    by: toStr(e.by),
+    act: toStr(e.act) || "edit",
+    loc: toStr(e.loc),
+    text: toStr(e.text),
+    diffs: Array.isArray(e.diffs) ? e.diffs.filter(function(d){ return d && typeof d === "object"; }).map(function(d){
+      return { f:toStr(d.f), from:toStr(d.from), to:toStr(d.to) };
+    }) : []
+  };
+}
+/* 记录一条改动：同时写实验室总日志 db.log；opts.well 存在时再写该管 well.log */
+function addLogEntry(opts){
+  if (!state.db) return null;
+  if (!Array.isArray(state.db.log)) state.db.log = [];
+  var entry = normLogEntry({
+    id: uid("lg"),
+    t: nowStampSec(),
+    by: opts.by || defaultPerson("") || "未署名",
+    act: opts.act || "edit",
+    loc: opts.loc || "",
+    text: opts.text || "",
+    diffs: opts.diffs || []
+  });
+  state.db.log.push(entry);
+  if (state.db.log.length > LAB_LOG_MAX) state.db.log.splice(0, state.db.log.length - LAB_LOG_MAX);
+  if (opts.well){
+    if (!Array.isArray(opts.well.log)) opts.well.log = [];
+    opts.well.log.push(entry);
+    if (opts.well.log.length > WELL_LOG_MAX) opts.well.log.splice(0, opts.well.log.length - WELL_LOG_MAX);
+  }
+  return entry;
 }
 function clampInt(v, lo, hi, fb){
   var s = (v === null || v === undefined) ? "" : String(v).trim();
@@ -2330,7 +2430,8 @@ function seedData(){
   var db = {
     version: 1,
     settings: { defaultKeeper: "", braceletMode: "two", tubeTypes: DEFAULT_TUBE_TYPES.slice(), updatedAt: nowStamp() },
-    racks: []
+    racks: [],
+    log: []
   };
   function mkBox(name, rows, cols, fill){
     var b = { id: uid("box"), name: name, rows: rows, cols: cols, wells: {} };
@@ -2399,7 +2500,7 @@ function seedData(){
 /* SECTION: state & storage */
 var state = {
   db: null,
-  mode: "occupancy",
+  mode: "color",
   query: "",
   selectedWell: null,
   legendFilter: null,
@@ -2427,7 +2528,10 @@ function normalizeWell(w){
           note: toStr(t.note),
           by: toStr(t.by)
         };
-      }) : []
+      }) : [],
+    log: Array.isArray(w.log)
+      ? w.log.filter(Boolean).slice(-WELL_LOG_MAX).map(normLogEntry)
+      : []
   };
 }
 function normalizeBox(b){
@@ -2468,6 +2572,9 @@ function normalizeDb(raw){
     },
     racks: Array.isArray(db.racks) ? db.racks.filter(Boolean).map(normalizeRack) : []
   };
+  out.log = Array.isArray(db.log)
+    ? db.log.filter(Boolean).slice(-LAB_LOG_MAX).map(normLogEntry)
+    : [];
   var sel = db.selected || {};
   out.selected = resolveSelection(out.racks, sel.rackId, sel.boxId);
   return out;
@@ -3043,11 +3150,17 @@ function stSave(force){
       return;
     }
   }
-  hit.box.wells[String(stPos)] = {
+  var newWell = hit.box.wells[String(stPos)] = {
     id: uid("well"), date: v.date, keeper: v.keeper, strain: v.strain,
-    plasmid: v.plasmid, color: v.color, note: v.note, takenOut: false, takings: []
+    plasmid: v.plasmid, color: v.color, note: v.note, takenOut: false, takings: [], log: []
   };
   var label = posLabel(hit.box, stPos);
+  addLogEntry({
+    well: newWell, by: v.keeper, act: "store",
+    loc: locText(hit.rack, hit.box, label),
+    text: "手环存菌登记：" + (v.strain || "未填菌种") +
+      (v.plasmid && v.plasmid !== "-" ? " / " + v.plasmid : "")
+  });
   persist();
   showSheet("stSheet", false);
   stPos = null;
@@ -3240,6 +3353,14 @@ function openTakeSheet(h){
   h.well.takings.slice().sort(function(a, b){ return (b.date || "").localeCompare(a.date || ""); }).forEach(function(t){
     info.appendChild(el("div", "tk", t.date + (t.by ? " · " + t.by : "") + (t.note ? " · " + t.note : "")));
   });
+  var hLogs = (Array.isArray(h.well.log) ? h.well.log : []).slice().reverse().slice(0, 10);
+  info.appendChild(el("div", "tl-h", "改动日志" + (hLogs.length ? "（最近 " + hLogs.length + " 条）" : "：还没有")));
+  if (!hLogs.length) info.appendChild(el("div", "tk", "还没有改动记录。"));
+  hLogs.forEach(function(e){
+    var node = buildLogEntryNode(e);
+    node.classList.add("lg-compact");
+    info.appendChild(node);
+  });
   document.getElementById("sqTakeNote").value = "";
   document.getElementById("sqTakeBtn").textContent = h.well.takenOut ? "再登记一次取出" : "取出这管（记录到云端）";
   var map = document.getElementById("sqMapLink");
@@ -3252,6 +3373,11 @@ function sqTake(){
   var who = sqCurrent.well.keeper || defaultPerson("");
   sqCurrent.well.takings.push({ id: uid("tk"), date: todayStr(), note: note.trim(), by: who });
   sqCurrent.well.takenOut = true;
+  addLogEntry({
+    well: sqCurrent.well, act: "take", by: who,
+    loc: locText(sqCurrent.rack, sqCurrent.box, posLabel(sqCurrent.box, sqCurrent.pos)),
+    text: "取菌页登记取出" + (note.trim() ? "：" + note.trim() : "")
+  });
   persist();
   showSheet("sqSheet", false);
   renderSearchQ();
@@ -3433,6 +3559,19 @@ function cellGlyph(well){
 /* SECTION: render modes */
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
+  {
+    date: "2026-10-05",
+    zh: [
+      "进入管理台时格子图默认按「保菌管类型」分类着色（橙/绿/EP/返回样等类型一眼可分），不用再手动点顶部的「类型」",
+      "新增改动日志：每一管菌的信息下方都有「改动日志」，写清楚谁在什么时候干了什么——存入、编辑（具体改了哪个字段、旧值→新值）、取出、删除取出记录、清空菌格都有记录；取菌弹层里也能看到该管最近 10 条",
+      "「设置」里新增「实验室改动日志」：把全实验室每一管的改动按时间倒序一条条罗列（操作类型彩色标签 + 操作人 + 时间 + 铁架/盒子/孔位 + 字段变化明细），支持按人名/菌种/位置等关键字筛选，也可以一键清空全部日志。日志随云端数据同步，实验室所有成员看到同一份，谁动过菌一目了然"
+    ],
+    en: [
+      "The grid now opens with tube-type coloring by default (orange/green/EP/return-sample types at a glance), no need to click \"Type\" manually",
+      "Added an audit trail: every tube's detail panel now has a change log stating who did what and when — store, edit (with exact field-level old → new values), take out, delete a taking record, and clearing a well are all recorded; the take-out sheet also shows the tube's latest 10 entries",
+      "Settings now includes a \"Lab activity log\": every change across the whole lab is listed newest-first (color-coded action badge + person + timestamp + rack/box/well + field-level diffs), with keyword filtering by person/strain/location/etc. and a one-click \"clear all logs\". The log syncs via the cloud and is shared by every lab member, so it is always clear who touched which tube"
+    ]
+  },
   {
     date: "2026-10-05",
     zh: [
@@ -3842,6 +3981,23 @@ function openSettingsModal(){
   mountBraceletKeyControls(keyBox, refreshUrls);
   wrap.appendChild(urlBox);
 
+  // 实验室改动日志（云端同步，所有成员可见：谁在什么时候干了什么）
+  var logBox = el("div", null, "");
+  logBox.style.cssText = "padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:var(--panel-2)";
+  var logLine = el("div", null, "");
+  logLine.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+  logLine.appendChild(el("span", null, "实验室改动日志："));
+  logLine.appendChild(el("b", null, String((state.db.log || []).length) + " 条"));
+  var bOpenLog = el("button", "btn primary", "查看实验室改动日志…");
+  bOpenLog.type = "button";
+  bOpenLog.addEventListener("click", function(){ closeModal(); openLabLogModal(); });
+  logLine.appendChild(bOpenLog);
+  logBox.appendChild(logLine);
+  var logHint = el("div", null, "记录每管菌的存入、编辑（含改了哪些字段）、取出、清空，以及批量导入、删除铁架/盒子等操作；写入云端，实验室所有成员都能看到「谁在什么时候干了什么」。单管的改动记录也会显示在该菌格信息下方。");
+  logHint.style.cssText = "font-size:12px;color:#6b7e94;margin-top:6px";
+  logBox.appendChild(logHint);
+  wrap.appendChild(logBox);
+
   // 数据与语言（手机端顶栏精简后，导出入口移到这里）
   var miscBox = el("div", null, "");
   miscBox.style.cssText = "margin-top:14px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)";
@@ -3877,9 +4033,60 @@ function openSettingsModal(){
   wrap.appendChild(miscBox);
 
   renderOpts();
-  openModal("\u8bbe\u7f6e", [wrap], [
-    { label: "\u4fdd\u5b58\u5e76\u540c\u6b65", kind: "primary", fn: function(){ persist(); toast("\u8bbe\u7f6e\u5df2\u4fdd\u5b58", "ok"); } },
-    { label: "\u5173\u95ed", kind: "" }
+  openModal("设置", [wrap], [
+    { label: "保存并同步", kind: "primary", fn: function(){ persist(); toast("设置已保存", "ok"); } },
+    { label: "关闭", kind: "" }
+  ]);
+}
+/* 实验室改动日志弹窗：全实验室 db.log 倒序罗列，支持关键字筛选、清空 */
+function openLabLogModal(){
+  var wrap = el("div", "lablog-wrap");
+  var ctl = el("div", "lablog-ctl");
+  var inp = el("input");
+  inp.type = "search"; inp.placeholder = "筛选：人名 / 操作 / 菌种 / 位置 / 字段…";
+  inp.autocomplete = "off"; inp.className = "lablog-search";
+  var bClear = el("button", "btn danger", "清空全部日志");
+  bClear.type = "button";
+  var cnt = el("div", "lablog-cnt", "");
+  var list = el("div", "lablog-list");
+  function render(){
+    var q = inp.value.trim().toLowerCase();
+    var all = state.db.log || [];
+    var logs = all.slice().reverse().filter(function(e){
+      if (!q) return true;
+      var hay = [e.by, e.text, e.loc, LOG_ACT_LABELS[e.act] || ""].join("\n").toLowerCase();
+      (e.diffs || []).forEach(function(d){
+        hay += "\n" + (LOG_FIELD_LABELS[d.f] || d.f) + " " + (d.from || "") + " " + (d.to || "");
+      });
+      return hay.toLowerCase().indexOf(q) >= 0;
+    });
+    list.innerHTML = "";
+    cnt.textContent = "共 " + all.length + " 条记录" + (q ? "，筛选出 " + logs.length + " 条" : "（最新的在最上面）");
+    if (!logs.length) list.appendChild(el("div", "tl-empty", q ? "没有匹配的记录。" : "还没有改动记录。"));
+    logs.forEach(function(e){ list.appendChild(buildLogEntryNode(e)); });
+  }
+  inp.addEventListener("input", render);
+  bClear.addEventListener("click", function(){
+    openModal("清空全部改动日志？", [
+      el("p", null, "将删除实验室总日志（" + ((state.db.log || []).length) + " 条）以及每一管下面的改动日志，此操作无法撤销。"),
+      el("p", null, "菌种记录、取出记录本身不受影响。")
+    ], [
+      { label: "返回", kind: "", fn: function(){ openLabLogModal(); } },
+      { label: "清空全部日志", kind: "danger", fn: function(){
+        state.db.log = [];
+        allWells().forEach(function(x){ x.well.log = []; });
+        persist();
+        renderAll();
+        closeModal();
+        toast("已清空全部改动日志", "ok");
+      } }
+    ]);
+  });
+  ctl.appendChild(inp); ctl.appendChild(bClear);
+  wrap.appendChild(ctl); wrap.appendChild(cnt); wrap.appendChild(list);
+  render();
+  openModal("实验室改动日志", [wrap], [
+    { label: "关闭", kind: "" }
   ]);
 }
 /* SECTION: seg-pill 分段按钮滑动亮块 */
@@ -4672,6 +4879,12 @@ function renderDetail(){
     tb.appendChild(save); tb.appendChild(cancel);
     tf.appendChild(tb);
     form.appendChild(tf);
+
+    var lgT = el("div", "sect-t");
+    lgT.appendChild(document.createTextNode("改动日志"));
+    lgT.appendChild(el("span", "cnt", well.log && well.log.length ? "(" + well.log.length + ")" : ""));
+    form.appendChild(lgT);
+    form.appendChild(buildWellLogBlock(well, "well-log"));
   }
   host.appendChild(form);
 
@@ -4804,9 +5017,16 @@ function flushAutoSave(){
   }
   autoEdit.stack.push(autoEdit.last);
   if (autoEdit.stack.length > 30) autoEdit.stack.shift();
+  var autoDiffs = wellFieldDiffs(autoEdit.last, snap);
   w.date = snap.date; w.keeper = snap.keeper; w.strain = snap.strain;
   w.plasmid = snap.plasmid; w.color = snap.color; w.note = snap.note;
   autoEdit.last = snap;
+  if (autoDiffs.length && state.selectedWell){
+    addLogEntry({
+      well: w, act: "edit", loc: curLocText(state.selectedWell.pos),
+      text: "自动保存修改", diffs: autoDiffs
+    });
+  }
   persist();
   reflectAutoSaved(w);
   if (autoEdit.undoBtn) autoEdit.undoBtn.disabled = false;
@@ -4836,6 +5056,7 @@ function undoAutoEdit(){
   var w = currentWell();
   if (!w || !autoEdit.stack.length) return;
   cancelAutoSaveTimer();
+  var undoBefore = snapWell6(w);
   var snap = autoEdit.stack.pop();
   w.date = snap.date; w.keeper = snap.keeper; w.strain = snap.strain;
   w.plasmid = snap.plasmid; w.color = snap.color; w.note = snap.note;
@@ -4844,6 +5065,13 @@ function undoAutoEdit(){
     if (n) n.value = snap[pair[1]] || "";
   });
   autoEdit.last = snap;
+  var undoDiffs = wellFieldDiffs(undoBefore, snap);
+  if (undoDiffs.length && state.selectedWell){
+    addLogEntry({
+      well: w, act: "edit", loc: curLocText(state.selectedWell.pos),
+      text: "撤回修改（恢复原值）", diffs: undoDiffs
+    });
+  }
   persist();
   reflectAutoSaved(w);
   if (autoEdit.undoBtn) autoEdit.undoBtn.disabled = autoEdit.stack.length === 0;
@@ -4888,14 +5116,23 @@ function saveWell(isEdit, force){
     }
   }
   var existing = box.wells[String(pos)];
+  var beforeSnap = existing ? snapWell6(existing) : null;
+  var created = null;
   if (existing) {
     existing.date = v.date; existing.keeper = v.keeper; existing.strain = v.strain;
     existing.plasmid = v.plasmid; existing.color = v.color; existing.note = v.note;
   } else {
-    box.wells[String(pos)] = {
+    created = box.wells[String(pos)] = {
       id: uid("well"), date: v.date, keeper: v.keeper, strain: v.strain,
-      plasmid: v.plasmid, color: v.color, note: v.note, takenOut: false, takings: []
+      plasmid: v.plasmid, color: v.color, note: v.note, takenOut: false, takings: [], log: []
     };
+  }
+  var loc = locText(getRack(), box, posLabel(box, pos));
+  if (existing) {
+    var diffs = wellFieldDiffs(beforeSnap, snapWell6(existing));
+    if (diffs.length) addLogEntry({ well: existing, act: "edit", loc: loc, text: "编辑菌管信息", diffs: diffs });
+  } else {
+    addLogEntry({ well: created, act: "store", loc: loc, text: "登记存入：" + (v.strain || "未填菌种") });
   }
   persist();
   renderAll();
@@ -4907,6 +5144,10 @@ function addTaking(well){
   var note = ((document.getElementById("tNote") || {}).value || "").trim();
   well.takings.push({ id: uid("tk"), date: date, note: note, by: by });
   well.takenOut = true;
+  addLogEntry({
+    well: well, act: "take", by: by, loc: state.selectedWell ? curLocText(state.selectedWell.pos) : "",
+    text: "登记取出" + (date ? "（" + date + "）" : "") + (note ? "：" + note : "")
+  });
   persist();
   renderAll();
   toast("已登记一次取出，格子标记为暂时取出", "ok");
@@ -4918,8 +5159,14 @@ function askDeleteTaking(well, t){
   ], [
     { label: "取消", kind: "" },
     { label: "删除记录", kind: "danger", fn: function(){
+      var wasOut = !!well.takenOut;
       well.takings = well.takings.filter(function(x){ return x.id !== t.id; });
       if (!well.takings.length) well.takenOut = false;
+      addLogEntry({
+        well: well, act: "untake", loc: state.selectedWell ? curLocText(state.selectedWell.pos) : "",
+        text: "删除一条取出记录（" + (t.date || "未填日期") + (t.by ? " · " + t.by : "") + "）" +
+              (wasOut && !well.takenOut ? "，该管恢复为在冰箱内" : "")
+      });
       persist(); renderAll(); toast("已删除该取出记录", "ok");
     } }
   ]);
@@ -4934,10 +5181,51 @@ function askClearWell(well, label){
       flushPendingAutoSave();
       var box = getBox();
       if (!box || !state.selectedWell) return;
+      var snap = box.wells[String(state.selectedWell.pos)];
+      addLogEntry({
+        act: "clear", loc: curLocText(state.selectedWell.pos),
+        text: "清空菌格：" + (well.strain || "未填菌种") +
+          (well.plasmid && well.plasmid !== "-" ? " / " + well.plasmid : "") +
+          (well.keeper ? "（保存人：" + well.keeper + "）" : "") +
+          "，含 " + well.takings.length + " 条取出记录" +
+          ((snap && snap.log && snap.log.length) ? "、" + snap.log.length + " 条历史" : "")
+      });
       delete box.wells[String(state.selectedWell.pos)];
       persist(); renderAll(); toast("已清空 " + label, "ok");
     } }
   ]);
+}
+/* SECTION: audit log UI 改动日志展示（菌格详情 / 取菌弹层 / 实验室日志弹窗共用） */
+function logDiffText(d){
+  var from = d.from || "（空）", to = d.to || "（空）";
+  return (LOG_FIELD_LABELS[d.f] || d.f) + "：" + from + " → " + to;
+}
+function buildLogEntryNode(e){
+  e = e || {};
+  var it = el("div", "lg-item act-" + (e.act || "edit"));
+  var head = el("div", "lg-head");
+  head.appendChild(el("span", "lg-badge", LOG_ACT_LABELS[e.act] || "操作"));
+  head.appendChild(el("span", "lg-who", e.by || "未署名"));
+  head.appendChild(el("span", "lg-time", e.t || ""));
+  it.appendChild(head);
+  if (e.text) it.appendChild(el("div", "lg-text", e.text));
+  if (e.loc) it.appendChild(el("div", "lg-loc", e.loc));
+  if (e.diffs && e.diffs.length){
+    var dd = el("div", "lg-diffs");
+    e.diffs.forEach(function(d){ dd.appendChild(el("div", "lg-diff", logDiffText(d))); });
+    it.appendChild(dd);
+  }
+  return it;
+}
+function buildWellLogBlock(well, cls){
+  var box = el("div", cls || "well-log");
+  var logs = (well && Array.isArray(well.log) ? well.log : []).slice().reverse();
+  if (!logs.length){
+    box.appendChild(el("div", "tl-empty", "还没有改动记录。"));
+  } else {
+    logs.forEach(function(e){ box.appendChild(buildLogEntryNode(e)); });
+  }
+  return box;
 }
 /* SECTION: modal */
 function openModal(title, bodyNodes, actions){
@@ -5026,6 +5314,11 @@ function askDeleteRack(rack){
   ], [
     { label: "取消", kind: "" },
     { label: "删除铁架", kind: "danger", fn: function(){
+      addLogEntry({
+        act: "delrack", loc: rack.name,
+        text: "删除铁架「" + rack.name + "」：连同 " + rack.boxes.length + " 个盒子、" +
+              rack.boxes.reduce(function(s, b){ return s + boxFilled(b); }, 0) + " 条菌种记录一并删除"
+      });
       state.db.racks = state.db.racks.filter(function(r){ return r.id !== rack.id; });
       state.db.selected = resolveSelection(state.db.racks, null, null);
       state.selectedWell = null;
@@ -5045,6 +5338,10 @@ function askDeleteBox(box){
     { label: "删除盒子", kind: "danger", fn: function(){
       var rack = getRack();
       if (!rack) return;
+      addLogEntry({
+        act: "delbox", loc: locText(rack, box, ""),
+        text: "删除盒子「" + box.name + "」：该盒 " + boxFilled(box) + " 条菌种记录及取出历史一并删除"
+      });
       rack.boxes = rack.boxes.filter(function(b){ return b.id !== box.id; });
       state.db.selected = resolveSelection(state.db.racks, rack.id, null);
       state.selectedWell = null;
@@ -5063,6 +5360,10 @@ function askClearBox(box){
   ], [
     { label: "取消", kind: "" },
     { label: "清空盒子", kind: "danger", fn: function(){
+      addLogEntry({
+        act: "clearbox", loc: locText(getRack(), box, ""),
+        text: "清空盒子「" + box.name + "」：删除其中全部 " + boxFilled(box) + " 条菌种记录与取出历史，盒子规格保留"
+      });
       box.wells = {};
       state.selectedWell = null;
       closeDetail();
@@ -5483,22 +5784,39 @@ function renderBulkExcelPreview(){
 function doBulkImport(){
   if (_bulk.mode === "excel"){ doBulkExcelImport(); return; }
   if (!_bulk.ref || !_bulk.rows) return;
-  var box = _bulk.ref.box, n = 0;
+  var rack = _bulk.ref.rack, box = _bulk.ref.box, n = 0, nNew = 0, nUpd = 0;
+  var pendingLogs = [];
   _bulk.rows.forEach(function(row){
     if (row.status !== "new" && row.status !== "upd") return;
-    var f = row.fields, key = String(row.pos), ex = box.wells[key];
+    var f = row.fields, key = String(row.pos), ex = box.wells[key], w;
+    var lb = posLabel(box, row.pos);
     if (row.status === "upd" && ex){
+      var before = snapWell6(ex);
       ex.strain = f.strain; ex.plasmid = f.plasmid; ex.keeper = f.keeper;
       ex.date = f.date || ex.date || todayStr(); ex.color = f.color; ex.note = f.note;
+      w = ex; nUpd++;
+      pendingLogs.push({ well:w, lb:lb, act:"edit", text:"批量导入(CSV)：更新信息",
+        diffs: wellFieldDiffs(before, snapWell6(ex)) });
     } else {
-      box.wells[key] = {
+      w = box.wells[key] = {
         id: uid("well"), date: f.date || todayStr(), keeper: f.keeper,
         strain: f.strain, plasmid: f.plasmid, color: f.color, note: f.note,
-        takenOut: false, takings: []
+        takenOut: false, takings: [], log: []
       };
+      nNew++;
+      pendingLogs.push({ well:w, lb:lb, act:"store", text:"批量导入(CSV)：登记存入 " + (f.strain || "未填菌种"), diffs:[] });
     }
     n++;
   });
+  if (n){
+    pendingLogs.forEach(function(p){
+      addLogEntry({ well:p.well, act:p.act, loc:locText(rack, box, p.lb), text:p.text, diffs:p.diffs });
+    });
+    addLogEntry({
+      act: "import", loc: locText(rack, box, ""),
+      text: "批量导入 CSV 到「" + locText(rack, box) + "」：新增 " + nNew + " 管、更新 " + nUpd + " 管"
+    });
+  }
   renderAll();
   refreshDatalists();
   closeModal();
@@ -5520,16 +5838,21 @@ function doBulkExcelImport(){
     sh.wells.forEach(function(row){
       if (row.status !== "new") return;
       var f = row.fields;
-      box.wells[String(row.pos)] = {
+      var w = box.wells[String(row.pos)] = {
         id: uid("well"), date: f.date || todayStr(), keeper: f.keeper,
         strain: f.strain, plasmid: f.plasmid, color: f.color, note: f.note,
-        takenOut: false, takings: []
+        takenOut: false, takings: [], log: []
       };
       n++;
+      addLogEntry({
+        well: w, act: "store", loc: locText(rack, box, posLabel(box, row.pos)),
+        text: "整盒 Excel 导入：登记存入 " + (f.strain || "未填菌种")
+      });
     });
     rack.boxes.push(box);
     nBox++;
   });
+  if (n) addLogEntry({ act:"import", loc: rack.name, text:"整盒 Excel 导入：新建 " + nBox + " 个盒子、导入 " + n + " 管" });
   if (sheets.length){
     var last = rack.boxes[rack.boxes.length - 1];
     state.db.selected = resolveSelection(state.db.racks, rack.id, last.id);
