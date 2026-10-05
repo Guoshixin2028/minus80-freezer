@@ -18,6 +18,14 @@
 - POST /api/labs/bracelet-enter 凭进门码进入 {bkey} -> {token, lab}（公开接口）
 - GET  /api/db             读取当前实验室最新数据 {rev, db}
 - PUT  /api/db             保存数据（带版本校验，冲突返回 409 + 服务器最新数据）
+- POST /api/feedback       提交问题反馈 {issue 必填, idea?, user?}（X-Lab-Token 鉴权）
+- GET  /api/feedback/mine  本实验室未读的工程师回复（进入页面弹窗提醒用）
+- POST /api/feedback/read  标记回复已读 {ids}
+- POST /api/engineer/login 工程师界面登录 {pw} -> {token}（密码来自 ENGINEER_PASS 环境变量）
+- GET  /api/engineer/feedback    全部反馈列表（X-Eng-Token）
+- POST /api/engineer/feedback/reply  回复反馈 {id, reply}（用户下次进入弹窗收到）
+- POST /api/engineer/feedback/close  复选框批量标记已处理 {ids}
+- GET/POST /api/engineer/email       读取/保存提醒邮箱（SMTP 凭据走环境变量，一天最多一封提醒）
 - GET  /api/health    健康检查
 - 其余路径托管 static/ 下的前端页面
 
@@ -37,8 +45,11 @@ import sqlite3
 import threading
 import time
 import datetime
+import smtplib
 import xml.etree.ElementTree as ET
 import zipfile
+from email.header import Header
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Optional
 
@@ -104,6 +115,18 @@ def _reg() -> sqlite3.Connection:
         "ip TEXT NOT NULL, lab_id TEXT NOT NULL, query TEXT NOT NULL, created_at REAL NOT NULL, "
         "PRIMARY KEY (ip, lab_id, query))"
     )
+    # 问题反馈：跨实验室全局（工程师统一查看），实验室解散不影响已提交记录；
+    # status: open 待处理 / replied 已回复 / closed 已标记处理；user_read: 回复后用户是否已读
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS feedback ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "lab_id TEXT, lab_name TEXT, user TEXT, "
+        "issue TEXT NOT NULL, idea TEXT DEFAULT '', created_at TEXT, "
+        "status TEXT DEFAULT 'open', reply TEXT DEFAULT '', replied_at TEXT, "
+        "user_read INTEGER DEFAULT 0)"
+    )
+    # 主库键值对（工程师提醒邮箱、上次发信日期等全局配置）
+    c.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
     return c
 
 
@@ -283,6 +306,33 @@ class BraceletBody(BaseModel):
 
 class SearchHistoryBody(BaseModel):
     query: str = ""
+
+
+class FeedbackBody(BaseModel):
+    issue: str = ""
+    idea: str = ""
+    user: str = ""
+
+
+class FeedbackReadBody(BaseModel):
+    ids: list = []
+
+
+class EngineerLoginBody(BaseModel):
+    pw: str = ""
+
+
+class EngineerReplyBody(BaseModel):
+    id: int
+    reply: str = ""
+
+
+class EngineerCloseBody(BaseModel):
+    ids: list = []
+
+
+class EngineerEmailBody(BaseModel):
+    email: str = ""
 
 
 # ---------------------------------------------------------------- lab routes
@@ -877,6 +927,251 @@ def clear_search_history(request: Request) -> dict:
             (ip, lab["id"]),
         )
     return {"queries": []}
+
+
+# ---------------------------------------------------------------- feedback / engineer
+# 问题反馈系统：实验室用户在设置里提交「遇到的问题/想法」；
+# 工程师凭密码进入工程师界面查看全部反馈、填写提醒邮箱并逐条回复。
+# 回复后反馈置为 replied，该实验室用户下次进入页面时弹窗收到回复。
+# 邮件提醒：存在未处理反馈时每个自然日最多发一封汇总（QQ 邮箱 SMTP，凭据走环境变量）。
+_ENGINEER_SESSION_TTL = 8 * 3600.0
+_engineer_tokens: dict = {}  # token -> 过期时间戳（单实例内存态，重启后需重新登录）
+
+
+def _engineer_pass() -> str:
+    return (os.environ.get("ENGINEER_PASS", "") or "").strip() or "daylab2026"
+
+
+def _smtp_conf() -> Optional[dict]:
+    user = (os.environ.get("SMTP_USER", "") or "").strip()
+    pwd = (os.environ.get("SMTP_PASS", "") or "").strip()
+    if not user or not pwd:
+        return None
+    try:
+        port = int((os.environ.get("SMTP_PORT", "") or "").strip() or "465")
+    except ValueError:
+        port = 465
+    return {
+        "host": (os.environ.get("SMTP_HOST", "") or "").strip() or "smtp.qq.com",
+        "port": port,
+        "user": user,
+        "pwd": pwd,
+        "frm": (os.environ.get("SMTP_FROM", "") or "").strip() or user,
+    }
+
+
+def _kv_get(c: sqlite3.Connection, key: str) -> Optional[str]:
+    row = c.execute("SELECT v FROM kv WHERE k = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _kv_set(c: sqlite3.Connection, key: str, val: str) -> None:
+    c.execute(
+        "INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        (key, val),
+    )
+
+
+def _require_engineer(request: Request) -> None:
+    tok = (request.headers.get("x-eng-token", "") or "").strip()
+    exp = _engineer_tokens.get(tok)
+    if not tok or exp is None or exp < time.time():
+        raise HTTPException(status_code=401, detail="工程师登录已过期，请重新输入密码")
+    _engineer_tokens[tok] = time.time() + _ENGINEER_SESSION_TTL  # 滑动续期
+
+
+def _now_str() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _maybe_send_feedback_mail() -> None:
+    """存在未处理反馈且今天还没发过提醒时，给工程师邮箱发一封汇总。
+    任何失败只写日志，绝不影响反馈提交本身。"""
+    try:
+        smtp = _smtp_conf()
+        if not smtp:
+            return
+        today = datetime.date.today().isoformat()
+        with _reg() as c:
+            if _kv_get(c, "feedback_mail_last_date") == today:
+                return
+            to = (_kv_get(c, "engineer_email") or "").strip()
+            pending = c.execute(
+                "SELECT COUNT(*) FROM feedback WHERE status = 'open'"
+            ).fetchone()[0]
+            if not to or pending <= 0:
+                return
+            rows = c.execute(
+                "SELECT lab_name, user, issue, created_at FROM feedback "
+                "WHERE status = 'open' ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+            _kv_set(c, "feedback_mail_last_date", today)
+        lines = [f"- [{r[0]}] {r[1] or '匿名'}（{r[3]}）：{r[2]}" for r in rows]
+        text = (
+            "实验室菌种管理台有新的问题反馈，当前待处理 {n} 条：\n\n{body}\n\n"
+            "打开管理台 → 设置 → 工程师界面，可查看全部反馈并回复。"
+        ).format(n=pending, body="\n".join(lines))
+        msg = MIMEText(text, "plain", "utf-8")
+        msg["Subject"] = Header(f"【菌种管理台】有 {pending} 条待处理反馈", "utf-8")
+        msg["From"] = smtp["frm"]
+        msg["To"] = to
+        if smtp["port"] == 465:
+            server = smtplib.SMTP_SSL(smtp["host"], smtp["port"], timeout=15)
+        else:
+            server = smtplib.SMTP(smtp["host"], smtp["port"], timeout=15)
+            server.starttls()
+        try:
+            server.login(smtp["user"], smtp["pwd"])
+            server.sendmail(smtp["frm"], [to], msg.as_string())
+        finally:
+            server.quit()
+        print("[feedback] 提醒邮件已发送至", to, flush=True)
+    except Exception as exc:  # noqa: BLE001 - 邮件失败绝不能阻断反馈流程
+        print("[feedback] 发送提醒邮件失败（不影响反馈提交）:", exc, flush=True)
+
+
+@app.post("/api/feedback")
+def submit_feedback(body: FeedbackBody, request: Request) -> dict:
+    """提交问题反馈：issue 必填，idea 选填；提交人取本机操作人名。"""
+    lab = _require_lab(request)
+    issue = body.issue.strip()
+    if not issue:
+        raise HTTPException(status_code=400, detail="请填写遇到的问题")
+    if len(issue) > 2000 or len(body.idea) > 2000:
+        raise HTTPException(status_code=400, detail="内容过长，请精简后提交")
+    with _lock, _reg() as c:
+        c.execute(
+            "INSERT INTO feedback(lab_id, lab_name, user, issue, idea, created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (lab["id"], lab["name"], body.user.strip()[:40], issue, body.idea.strip(), _now_str()),
+        )
+    _maybe_send_feedback_mail()
+    return {"ok": True}
+
+
+@app.get("/api/feedback/mine")
+def my_feedback_replies(request: Request) -> dict:
+    """本实验室收到但还没点开看过的工程师回复（进入页面时弹窗提醒用）。
+
+    注意条件是 user_read=0 且有回复内容，不限定 status='replied'——
+    否则工程师回复后若立即标记「已处理」（closed），用户将永远收不到该回复。
+    """
+    lab = _require_lab(request)
+    with _reg() as c:
+        rows = c.execute(
+            "SELECT id, reply, replied_at, issue, created_at FROM feedback "
+            "WHERE lab_id = ? AND user_read = 0 AND reply != '' "
+            "ORDER BY replied_at DESC LIMIT 20",
+            (lab["id"],),
+        ).fetchall()
+    return {
+        "replies": [
+            {"id": r[0], "reply": r[1], "repliedAt": r[2], "issue": r[3], "createdAt": r[4]}
+            for r in rows
+        ]
+    }
+
+
+@app.post("/api/feedback/read")
+def mark_feedback_read(body: FeedbackReadBody, request: Request) -> dict:
+    """用户看完回复弹窗后标记已读，之后不再弹。"""
+    lab = _require_lab(request)
+    if body.ids:
+        with _lock, _reg() as c:
+            c.executemany(
+                "UPDATE feedback SET user_read = 1 WHERE id = ? AND lab_id = ?",
+                [(i, lab["id"]) for i in body.ids],
+            )
+    return {"ok": True}
+
+
+@app.post("/api/engineer/login")
+def engineer_login(body: EngineerLoginBody) -> dict:
+    """工程师界面登录：密码比对通过后发内存态 token（8 小时滑动续期）。"""
+    pw = body.pw.strip()
+    if not pw or not secrets.compare_digest(pw, _engineer_pass()):
+        raise HTTPException(status_code=403, detail="密码错误")
+    now = time.time()
+    for k in [k for k, v in _engineer_tokens.items() if v < now]:
+        _engineer_tokens.pop(k, None)
+    tok = secrets.token_urlsafe(24)
+    _engineer_tokens[tok] = now + _ENGINEER_SESSION_TTL
+    return {"token": tok}
+
+
+@app.get("/api/engineer/feedback")
+def engineer_list_feedback(request: Request) -> dict:
+    """全部反馈（待处理排前），供工程师界面罗列。"""
+    _require_engineer(request)
+    with _reg() as c:
+        rows = c.execute(
+            "SELECT id, lab_name, user, issue, idea, created_at, status, reply, replied_at "
+            "FROM feedback ORDER BY (status = 'open') DESC, id DESC LIMIT 500"
+        ).fetchall()
+        pending = c.execute(
+            "SELECT COUNT(*) FROM feedback WHERE status = 'open'"
+        ).fetchone()[0]
+    return {
+        "pending": pending,
+        "items": [
+            {
+                "id": r[0], "labName": r[1], "user": r[2], "issue": r[3], "idea": r[4],
+                "createdAt": r[5], "status": r[6], "reply": r[7], "repliedAt": r[8],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/engineer/feedback/reply")
+def engineer_reply_feedback(body: EngineerReplyBody, request: Request) -> dict:
+    """回复一条反馈：置 replied 并标记用户未读（该实验室用户下次进入时弹窗收到）。"""
+    _require_engineer(request)
+    reply = body.reply.strip()
+    if not reply:
+        raise HTTPException(status_code=400, detail="回复内容不能为空")
+    with _lock, _reg() as c:
+        cur = c.execute(
+            "UPDATE feedback SET status = 'replied', reply = ?, replied_at = ?, user_read = 0 "
+            "WHERE id = ?",
+            (reply, _now_str(), body.id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="该反馈不存在")
+    return {"ok": True}
+
+
+@app.post("/api/engineer/feedback/close")
+def engineer_close_feedback(body: EngineerCloseBody, request: Request) -> dict:
+    """复选框批量「标记已处理」（不发用户通知）。"""
+    _require_engineer(request)
+    if body.ids:
+        with _lock, _reg() as c:
+            c.executemany(
+                "UPDATE feedback SET status = 'closed' WHERE id = ? AND status != 'closed'",
+                [(i,) for i in body.ids],
+            )
+    return {"ok": True}
+
+
+@app.get("/api/engineer/email")
+def engineer_get_email(request: Request) -> dict:
+    _require_engineer(request)
+    with _reg() as c:
+        email = _kv_get(c, "engineer_email") or ""
+    return {"email": email, "smtpConfigured": bool(_smtp_conf())}
+
+
+@app.post("/api/engineer/email")
+def engineer_set_email(body: EngineerEmailBody, request: Request) -> dict:
+    """保存/清除提醒邮箱；SMTP 凭据来自环境变量，未配置时仅保存不发信。"""
+    _require_engineer(request)
+    email = body.email.strip()
+    if email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="邮箱格式不正确")
+    with _lock, _reg() as c:
+        _kv_set(c, "engineer_email", email)
+    return {"ok": True, "email": email, "smtpConfigured": bool(_smtp_conf())}
 
 
 # ---------------------------------------------------------------- static

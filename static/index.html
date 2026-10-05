@@ -1859,10 +1859,7 @@ var I18N = {
   "类型": "Type",
   "＋ 添加新类型…": "+ Add new type…",
   "添加保菌管类型": "Add tube type",
-  "添加类型": "Add type",
   "类型名称": "Type name",
-  "删除类型": "Delete type",
-  "保菌管类型（登记存菌时下拉选择，写入云端、所有设备同步）": "Tube types (chosen from a dropdown when storing; saved to cloud and synced to all devices)",
   "个性化（仅保存在这台设备）": "Personalization (saved on this device only)",
   "菌管信息编辑方式：": "How tube edits are saved:",
   "自动保存（推荐）": "Auto-save (recommended)",
@@ -1877,9 +1874,7 @@ var I18N = {
   "已撤回": "Undone",
   "待保存…": "Saving…",
   "所有修改已保存": "All changes saved",
-  "新类型名称，如：进口 2mL 冻存管": "New type name, e.g. imported 2 mL cryovial",
   "按保菌管类型分组着色（橙/绿/EP/返回样…），未选类型的单独一组": "Color by tube type (orange/green/EP/company sample…); wells without a type form one group",
-  "删除类型只会把它从下拉中移除，已经登记为该类型的孔位记录不会被改动。": "Deleting a type only removes it from the dropdown; wells already recorded with that type are kept unchanged.",
   "当前还没有盒子。": "No boxes yet. ",
   "直接在下方选择整盒 Excel 上传（每个 sheet 自动建成一个盒子并填好数据，连铁架也会自动创建）；单盒 CSV 需要先在左侧新建盒子后再使用。": "Upload a whole-box Excel below (each sheet becomes a box with data filled in, and a rack is created automatically); single-box CSV requires creating a box on the left first.",
   "单盒 CSV 需要先有目标盒子：请先在左侧新建盒子，或改用整盒 Excel（自动建盒）": "Single-box CSV needs a target box first: create a box on the left, or use a whole-box Excel (boxes are created automatically)",
@@ -3556,6 +3551,21 @@ function cellGlyph(well){
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
   {
+    date: "2026-10-06",
+    zh: [
+      "「设置」新增问题反馈：遇到问题可以一键提交（必填），想说的想法也可以一并写上（选填）；工程师回复后，你下次打开管理台会弹窗提醒",
+      "「设置」新增工程师界面入口（需要访问密码）：工程师可以在里面填写提醒邮箱（有新反馈时每天最多发一封提醒邮件）、查看所有用户提交的问题、逐条回复（回复后用户下次进入会收到弹窗）并勾选标记已处理",
+      "「设置」里原来的「保菌管类型」管理区块已移除——登记存菌时的类型下拉、「添加新类型」、格子图按类型着色都照常可用，只是不再在设置里占一整块",
+      "修复手机（微信内置浏览器等）上点白天/夜晚切换按钮时没有圆形扩散、一瞬间就切换的问题：现在不支持新动画接口的手机也会从按钮位置以圆形向外扩散切换主题"
+    ],
+    en: [
+      "Settings now has a feedback form: report an issue (required) and optionally share your ideas; once the engineer replies, you'll get a popup notice the next time you open the console",
+      "Settings adds an engineer console entry (password required): the engineer can set a notification email (at most one reminder email per day when new feedback arrives), browse all submitted issues, reply to each one (the user gets a popup on next visit) and mark them as handled",
+      "The old \"Tube type\" management section has been removed from Settings — the type dropdown when storing tubes, \"Add new type\" and type-based grid coloring all keep working; it just no longer takes up space in Settings",
+      "Fixed theme switching on phones (e.g. WeChat's in-app browser) instantly snapping instead of the circular reveal: browsers without the new animation API now also expand a circle from the button position when toggling light/dark"
+    ]
+  },
+  {
     date: "2026-10-05",
     zh: [
       "修复手机/窄屏上「详情」按钮点了没反应的问题：原来详情面板弹出后会把顶栏整个盖住，按钮永远点不到。现在已删除这个多余的按钮——详情面板打开时点面板外的空白处即可关闭，面板右上角的 × 也一直可用",
@@ -3851,89 +3861,6 @@ function openSettingsModal(){
   renderEditOpts();
   wrap.appendChild(persBox);
 
-  // 保菌管类型（写入云端，所有设备同步；可增删）
-  function countWellsByType(){
-    var cnt = {};
-    (state.db.racks || []).forEach(function(rk){
-      (rk.boxes || []).forEach(function(b){
-        Object.keys(b.wells || {}).forEach(function(k){
-          var tp = (b.wells[k].color || "").trim();
-          if (tp) cnt[tp] = (cnt[tp] || 0) + 1;
-        });
-      });
-    });
-    return cnt;
-  }
-  var typeBox = el("div", null, "");
-  typeBox.style.cssText = "padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:var(--panel-2)";
-  typeBox.appendChild(el("div", null, "保菌管类型（登记存菌时下拉选择，写入云端、所有设备同步）"));
-  var typeList = el("div", null, "");
-  typeList.style.cssText = "margin:8px 0;display:flex;flex-direction:column;gap:6px";
-  var typeAddRow = el("div", null, "");
-  typeAddRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
-  var typeInput = el("input");
-  typeInput.type = "text"; typeInput.placeholder = "新类型名称，如：进口 2mL 冻存管"; typeInput.autocomplete = "off";
-  typeInput.style.cssText = "flex:1;min-width:180px";
-  var typeAddBtn = el("button", "btn primary", "添加类型");
-  typeAddBtn.type = "button";
-  function doAddType(){
-    var name = typeInput.value.trim();
-    if (!name) return;
-    if (addTubeType(name)){
-      typeInput.value = "";
-      renderTypeList();
-      renderLegend(); renderGrid();
-    }
-  }
-  typeAddBtn.addEventListener("click", doAddType);
-  typeInput.addEventListener("keydown", function(e){ if (e.key === "Enter"){ e.preventDefault(); doAddType(); } });
-  function askDeleteType(tp){
-    var n = countWellsByType()[tp] || 0;
-    closeModal();
-    var p = el("div");
-    p.appendChild(el("p", null, "确定删除类型「" + tp + "」吗？"));
-    p.appendChild(el("p", null, "删除后登记时不再显示该类型；" + (n ? "当前已有 " + n + " 管记录是这个类型，记录本身会原样保留（颜色分组中仍会出现）" : "当前没有孔位使用它") + "。"));
-    openModal("删除类型", [p], [
-      { label: "取消", kind: "", fn: function(){ openSettingsModal(); } },
-      { label: "删除", kind: "danger", fn: function(){
-        var types = getTubeTypes().filter(function(x){ return x !== tp; });
-        state.db.settings.tubeTypes = types;
-        state.db.settings.updatedAt = nowStamp();
-        persist();
-        toast("已删除类型「" + tp + "」（已有记录保留）", "ok");
-        renderLegend(); renderGrid();
-        openSettingsModal();
-      } }
-    ]);
-  }
-  function renderTypeList(){
-    typeList.innerHTML = "";
-    var cnt = countWellsByType();
-    getTubeTypes().forEach(function(tp){
-      var row = el("div", null, "");
-      row.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel)";
-      var chip = el("span");
-      chip.style.cssText = "flex:0 0 auto;width:12px;height:12px;border-radius:50%;background:" + typeColor(tp);
-      row.appendChild(chip);
-      row.appendChild(el("b", null, tp));
-      row.appendChild(el("span", null, cnt[tp] ? cnt[tp] + " 管" : "未使用"));
-      row.lastChild.style.cssText = "font-size:11.5px;color:var(--ink-3)";
-      var sp = el("span", "sp"); sp.style.flex = "1"; row.appendChild(sp);
-      var del = el("button", "iconbtn danger", "");
-      del.type = "button"; del.title = "删除类型"; del.appendChild(icon("trash-2", "sm"));
-      del.addEventListener("click", function(){ askDeleteType(tp); });
-      row.appendChild(del);
-      typeList.appendChild(row);
-    });
-  }
-  typeBox.appendChild(typeList);
-  typeAddRow.appendChild(typeInput); typeAddRow.appendChild(typeAddBtn);
-  typeBox.appendChild(typeAddRow);
-  var typeHint = el("div", null, "删除类型只会把它从下拉中移除，已经登记为该类型的孔位记录不会被改动。");
-  typeHint.style.cssText = "font-size:12px;color:#6b7e94;margin-top:6px";
-  typeBox.appendChild(typeHint);
-  renderTypeList();
-  wrap.appendChild(typeBox);
 
   wrap.appendChild(el("p", null, "手环存/取入口方式（写入云端，所有设备同步）："));
   var opt1 = el("div", null, "");
@@ -4004,6 +3931,26 @@ function openSettingsModal(){
   logHint.style.cssText = "font-size:12px;color:#6b7e94;margin-top:6px";
   logBox.appendChild(logHint);
   wrap.appendChild(logBox);
+
+  // 问题反馈 + 工程师界面入口
+  var fbBox = el("div", null, "");
+  fbBox.style.cssText = "padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:var(--panel-2)";
+  var fbLine = el("div", null, "");
+  fbLine.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+  fbLine.appendChild(el("span", null, "问题反馈："));
+  var bFb = el("button", "btn primary", "提交问题反馈…");
+  bFb.type = "button";
+  bFb.addEventListener("click", function(){ closeModal(); openFeedbackModal(); });
+  fbLine.appendChild(bFb);
+  var bEng = el("button", "btn", "工程师界面…");
+  bEng.type = "button";
+  bEng.addEventListener("click", function(){ closeModal(); openEngineerLogin(); });
+  fbLine.appendChild(bEng);
+  fbBox.appendChild(fbLine);
+  var fbHint = el("div", null, "用着不顺手、发现了问题、有新想法？在这里告诉我们。工程师会在后台查看并回复，回复后你下次进入系统时会弹窗提醒。");
+  fbHint.style.cssText = "font-size:12px;color:#6b7e94;margin-top:6px";
+  fbBox.appendChild(fbHint);
+  wrap.appendChild(fbBox);
 
   // 数据与语言（手机端顶栏精简后，导出入口移到这里）
   var miscBox = el("div", null, "");
@@ -4093,6 +4040,282 @@ function openLabLogModal(){
   wrap.appendChild(ctl); wrap.appendChild(cnt); wrap.appendChild(list);
   render();
   openModal("实验室改动日志", [wrap], [
+    { label: "关闭", kind: "" }
+  ]);
+}
+
+/* SECTION: 问题反馈 + 工程师界面 */
+var ENG_TOKEN_KEY = "minus80-freezer.engToken";
+function engToken(){ try { return sessionStorage.getItem(ENG_TOKEN_KEY) || ""; } catch(e){ return ""; } }
+function setEngToken(t){
+  try { if (t) sessionStorage.setItem(ENG_TOKEN_KEY, t); else sessionStorage.removeItem(ENG_TOKEN_KEY); } catch(e){}
+}
+function engFetch(path, opts){
+  opts = opts || {};
+  var h = { "X-Eng-Token": engToken() };
+  var init = { method: opts.method || "GET", headers: h };
+  if (opts.body){ h["Content-Type"] = "application/json"; init.body = JSON.stringify(opts.body); }
+  return fetch(API_BASE + path, init).then(function(r){
+    return r.json().catch(function(){ return {}; }).then(function(j){
+      if (!r.ok){ setEngToken(""); throw new Error(j.detail || ("HTTP " + r.status)); }
+      return j;
+    });
+  });
+}
+
+/* 用户提交问题反馈：问题必填、想法选填 */
+function openFeedbackModal(){
+  var wrap = el("div", null, "");
+  var lb1 = el("div", null, "遇到的问题（必填）：");
+  lb1.style.cssText = "font-weight:650;margin:2px 0 6px";
+  var t1 = el("textarea");
+  t1.rows = 4; t1.maxLength = 2000;
+  t1.placeholder = "描述你遇到的问题，例如：某一步点了没反应 / 数据没同步 / 显示不对…";
+  t1.style.cssText = "width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;resize:vertical";
+  var lb2 = el("div", null, "想法 / 建议（选填）：");
+  lb2.style.cssText = "font-weight:650;margin:12px 0 6px";
+  var t2 = el("textarea");
+  t2.rows = 3; t2.maxLength = 2000;
+  t2.placeholder = "希望增加什么功能、哪里可以更好用…";
+  t2.style.cssText = t1.style.cssText;
+  var err = el("div", null, "");
+  err.style.cssText = "color:#c0392b;font-size:12.5px;margin-top:8px;min-height:1em";
+  var op = getOperator();
+  var who = el("div", null, "提交人：" + (op || "（未登记操作人，将匿名提交）"));
+  who.style.cssText = "font-size:12px;color:#6b7e94;margin-top:8px";
+  var submit = el("button", "btn primary", "提交反馈");
+  submit.type = "button";
+  submit.style.cssText = "width:100%;margin-top:10px;padding:10px 0;font-size:14px";
+  submit.addEventListener("click", function(){
+    var issue = t1.value.trim();
+    if (!issue){ err.textContent = "请先填写「遇到的问题」再提交。"; t1.focus(); return; }
+    submit.disabled = true; submit.textContent = "提交中…";
+    labPost("/api/feedback", { issue: issue, idea: t2.value.trim(), user: op || "" })
+      .then(function(){
+        closeModal();
+        toast("反馈已提交，谢谢！我们会尽快处理", "ok");
+      })
+      .catch(function(e){
+        submit.disabled = false; submit.textContent = "提交反馈";
+        err.textContent = "提交失败：" + e.message + "，请稍后重试";
+      });
+  });
+  wrap.appendChild(lb1); wrap.appendChild(t1);
+  wrap.appendChild(lb2); wrap.appendChild(t2);
+  wrap.appendChild(err); wrap.appendChild(who); wrap.appendChild(submit);
+  openModal("问题反馈", [wrap], [
+    { label: "关闭", kind: "" }
+  ]);
+  setTimeout(function(){ t1.focus(); }, 80);
+}
+
+/* 进入管理台后检查工程师回复（每次会话最多弹一次） */
+var _fbRepliesChecked = false;
+function checkFeedbackReplies(){
+  if (_fbRepliesChecked) return;
+  /* 若已有弹窗打开（如首次使用的名字登记），等它关闭后再查，避免顶掉用户正在填写的弹窗 */
+  if (document.getElementById("backdrop").classList.contains("open")){
+    setTimeout(checkFeedbackReplies, 1500);
+    return;
+  }
+  _fbRepliesChecked = true;
+  fetch(API_BASE + "/api/feedback/mine", { headers: authHeaders() })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(j){
+      if (!j || !j.replies || !j.replies.length) return;
+      var ids = j.replies.map(function(x){ return x.id; });
+      var wrap = el("div", null, "");
+      j.replies.forEach(function(x){
+        var card = el("div", null, "");
+        card.style.cssText = "border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0;background:var(--panel-2);text-align:left";
+        var q = el("div", null, "你反馈的问题（" + (x.createdAt || "") + "）：" + (x.issue || ""));
+        q.style.cssText = "font-size:12.5px;color:#6b7e94";
+        var a = el("div", null, "工程师回复：" + (x.reply || ""));
+        a.style.cssText = "font-weight:650;margin-top:5px";
+        var tm = el("div", null, x.repliedAt || "");
+        tm.style.cssText = "font-size:11.5px;color:#6b7e94;margin-top:4px";
+        card.appendChild(q); card.appendChild(a); card.appendChild(tm);
+        wrap.appendChild(card);
+      });
+      openModal("你的反馈有新回复", [wrap], [
+        { label: "知道了", kind: "primary", fn: function(){
+          labPost("/api/feedback/read", { ids: ids }).catch(function(){});
+        } }
+      ]);
+    })
+    .catch(function(){});
+}
+
+/* 工程师：密码登录（password 输入框，不走 promptModal 以便隐藏明文）；
+   提交按钮内嵌在表单里（openModal 的 actions 按钮会先关弹窗再执行，校验错误将无处显示） */
+function openEngineerLogin(){
+  var wrap = el("div");
+  var f = el("div", "field");
+  f.style.marginBottom = "0";
+  f.appendChild(el("label", null, "访问密码"));
+  var i = el("input");
+  i.type = "password"; i.placeholder = "请输入工程师访问密码"; i.autocomplete = "off";
+  f.appendChild(i);
+  var err = el("div", null, "");
+  err.style.cssText = "color:#c0392b;font-size:12.5px;margin-top:8px;min-height:1em";
+  var go = el("button", "btn primary", "进入");
+  go.type = "button";
+  go.style.cssText = "width:100%;margin-top:10px";
+  go.addEventListener("click", function(){
+    var pw = i.value.trim();
+    if (!pw){ err.textContent = "请输入密码。"; i.focus(); return; }
+    go.disabled = true;
+    fetch(API_BASE + "/api/engineer/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pw: pw })
+    }).then(function(r){
+      return r.json().catch(function(){ return {}; }).then(function(j){
+        if (!r.ok) throw new Error(j.detail || "密码错误");
+        setEngToken(j.token || "");
+        closeModal();
+        toast("已进入工程师界面", "ok");
+        openEngineerPanel();
+      });
+    }).catch(function(e){
+      go.disabled = false;
+      err.textContent = e.message || "登录失败";
+    });
+  });
+  wrap.appendChild(f); wrap.appendChild(err); wrap.appendChild(go);
+  openModal("工程师界面", [wrap], [
+    { label: "取消", kind: "" }
+  ]);
+  setTimeout(function(){ i.focus(); }, 50);
+  i.addEventListener("keydown", function(e){
+    if (e.key === "Enter"){
+      e.preventDefault();
+      go.click();
+    }
+  });
+}
+
+/* 工程师面板：提醒邮箱 + 全部反馈列表（回复 / 复选框标记已处理） */
+function openEngineerPanel(){
+  var wrap = el("div", null, "");
+
+  // 提醒邮箱区
+  var mbox = el("div", null, "");
+  mbox.style.cssText = "padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);margin-bottom:12px";
+  mbox.appendChild(el("div", null, "提醒邮箱（有未处理反馈时一天最多发一封汇总）："));
+  var mrow = el("div", null, "");
+  mrow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;margin-top:6px";
+  var minp = el("input");
+  minp.type = "email"; minp.placeholder = "engineer@example.com"; minp.autocomplete = "off";
+  minp.style.cssText = "flex:1;min-width:200px";
+  var mbtn = el("button", "btn", "保存");
+  mbtn.type = "button";
+  mrow.appendChild(minp); mrow.appendChild(mbtn);
+  mbox.appendChild(mrow);
+  var mhint = el("div", null, "");
+  mhint.style.cssText = "font-size:11.5px;color:#6b7e94;margin-top:6px";
+  mbox.appendChild(mhint);
+  wrap.appendChild(mbox);
+  engFetch("/api/engineer/email").then(function(j){
+    minp.value = j.email || "";
+    mhint.textContent = j.smtpConfigured
+      ? "SMTP 已配置：有未处理反馈时将每天发送一封汇总到上面的邮箱。"
+      : "服务器尚未配置 SMTP（环境变量 SMTP_USER / SMTP_PASS），暂不会发邮件，仅保存邮箱。";
+  }).catch(function(e){ mhint.textContent = "读取失败：" + e.message; });
+  mbtn.addEventListener("click", function(){
+    mbtn.disabled = true;
+    engFetch("/api/engineer/email", { method: "POST", body: { email: minp.value.trim() } })
+      .then(function(){ mbtn.disabled = false; toast("提醒邮箱已保存", "ok"); })
+      .catch(function(e){ mbtn.disabled = false; toast(e.message || "保存失败", "err"); });
+  });
+
+  // 反馈列表
+  var cnt = el("div", null, "");
+  cnt.style.cssText = "font-size:12.5px;color:#6b7e94;margin:2px 0 8px";
+  var list = el("div", null, "");
+  list.style.cssText = "display:flex;flex-direction:column;gap:10px;max-height:52vh;overflow:auto;padding-right:2px";
+  wrap.appendChild(cnt); wrap.appendChild(list);
+
+  var STATUS_LABEL = { open: "待处理", replied: "已回复", closed: "已关闭" };
+  var STATUS_COLOR = { open: "#d97706", replied: "#2d8659", closed: "#6b7e94" };
+  var _checks = {}; // id -> checkbox（批量标记已处理用）
+
+  function buildEngItem(it){
+    var card = el("div", null, "");
+    card.style.cssText = "border:1px solid var(--line);border-left:3px solid " + (STATUS_COLOR[it.status] || "#999") + ";border-radius:8px;padding:9px 11px;background:var(--panel)";
+    var head = el("div", null, "");
+    head.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap";
+    var badge = el("span", null, STATUS_LABEL[it.status] || it.status);
+    badge.style.cssText = "font-size:11px;padding:1px 8px;border-radius:999px;color:#fff;background:" + (STATUS_COLOR[it.status] || "#999");
+    head.appendChild(badge);
+    head.appendChild(el("b", null, "[" + (it.labName || "?") + "] " + (it.user || "匿名")));
+    var tm = el("span", null, it.createdAt || "");
+    tm.style.cssText = "font-size:11.5px;color:#6b7e94;margin-left:auto";
+    head.appendChild(tm);
+    card.appendChild(head);
+    var q = el("div", null, it.issue || "");
+    q.style.cssText = "margin-top:6px;white-space:pre-wrap;word-break:break-word";
+    card.appendChild(q);
+    if (it.idea){
+      var idea = el("div", null, "想法/建议：" + it.idea);
+      idea.style.cssText = "margin-top:5px;font-size:12.5px;color:#6b7e94;white-space:pre-wrap;word-break:break-word";
+      card.appendChild(idea);
+    }
+    if (it.reply){
+      var rp = el("div", null, "");
+      rp.style.cssText = "margin-top:6px;padding:6px 9px;border-radius:6px;background:var(--panel-2);font-size:12.5px";
+      rp.textContent = "已回复（" + (it.repliedAt || "") + "）：" + it.reply;
+      card.appendChild(rp);
+    }
+    var act = el("div", null, "");
+    act.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px";
+    var cbl = el("label", null, "");
+    cbl.style.cssText = "display:flex;align-items:center;gap:4px;font-size:12.5px;cursor:pointer";
+    var cb = el("input");
+    cb.type = "checkbox";
+    if (it.status !== "closed") _checks[it.id] = cb;  // 待处理/已回复都可勾选标记已处理
+    cbl.appendChild(cb); cbl.appendChild(document.createTextNode("已处理"));
+    act.appendChild(cbl);
+    var rin = el("input");
+    rin.type = "text"; rin.placeholder = it.reply ? "补充回复…" : "回复该用户…";
+    rin.autocomplete = "off";
+    rin.style.cssText = "flex:1;min-width:180px";
+    var sbtn = el("button", "btn primary", it.reply ? "更新回复" : "提交回复");
+    sbtn.type = "button";
+    sbtn.addEventListener("click", function(){
+      var rv = rin.value.trim();
+      if (!rv){ toast("请先填写回复内容", "err"); rin.focus(); return; }
+      sbtn.disabled = true;
+      engFetch("/api/engineer/feedback/reply", { method: "POST", body: { id: it.id, reply: rv } })
+        .then(function(){ toast("已回复，该用户下次进入时将看到", "ok"); render(); })
+        .catch(function(e){ sbtn.disabled = false; toast(e.message || "提交失败", "err"); });
+    });
+    act.appendChild(rin); act.appendChild(sbtn);
+    card.appendChild(act);
+    return card;
+  }
+  function render(){
+    _checks = {};
+    engFetch("/api/engineer/feedback").then(function(j){
+      list.innerHTML = ""; _checks = {};
+      cnt.textContent = "待处理 " + j.pending + " 条 · 共 " + j.items.length + " 条";
+      if (!j.items.length) list.appendChild(el("div", "tl-empty", "还没有收到反馈。"));
+      j.items.forEach(function(it){ list.appendChild(buildEngItem(it)); });
+    }).catch(function(e){
+      list.innerHTML = "";
+      list.appendChild(el("div", "tl-empty", "加载失败：" + e.message + "（登录过期请重新进入工程师界面）"));
+    });
+  }
+  render();
+  openModal("工程师界面", [wrap], [
+    { label: "标记勾选项为已处理", kind: "", fn: function(){
+      var ids = Object.keys(_checks).filter(function(k){ return _checks[k] && _checks[k].checked; }).map(Number);
+      if (!ids.length){ toast("没有勾选「已处理」的条目", "err"); openEngineerPanel(); return; }
+      engFetch("/api/engineer/feedback/close", { method: "POST", body: { ids: ids } })
+        .then(function(){ toast("已标记为已处理", "ok"); openEngineerPanel(); })
+        .catch(function(e){ toast(e.message || "操作失败", "err"); openEngineerPanel(); });
+    } },
+    { label: "刷新", kind: "", fn: function(){ openEngineerPanel(); } },
     { label: "关闭", kind: "" }
   ]);
 }
@@ -5467,11 +5690,11 @@ var BULK_ALIASES = {
   color: ["类型","保菌管类型","管型","管盖颜色","颜色","type","tube type","cap color","color"],
   note: ["备注","说明","remark","comment","note"]
 };
-/* 校验批量行里的类型：不在当前列表时原样保留并给黄色警告（可在设置中补建该类型） */
+/* 校验批量行里的类型：不在当前列表时原样保留并给黄色警告（可在登记下拉中补建该类型） */
 function bulkCheckType(f, row){
   f.color = (f.color || "").trim();
   if (f.color && getTubeTypes().indexOf(f.color) < 0){
-    row.warn = "类型「" + f.color + "」不在当前类型列表，将原样导入；可在「设置 → 保菌管类型」中添加";
+    row.warn = "类型「" + f.color + "」不在当前类型列表，将原样导入；可在登记存菌的类型下拉中选择「添加新类型」补建";
   }
 }
 var _bulk = { ref:null, rows:null, overwrite:false, els:{}, mode:"csv", sheets:null };
@@ -6205,21 +6428,67 @@ function toggleTheme(e){
   var next = currentTheme() === "dark" ? "light" : "dark";
   var reduce = false;
   try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch(err){}
-  /* 不支持 View Transitions 或用户要求减弱动效时，直接切换 */
-  if (reduce || typeof document.startViewTransition !== "function"){
-    applyTheme(next);
-    return;
-  }
+  /* 用户要求减弱动效时直接切换 */
+  if (reduce){ applyTheme(next); return; }
   var x, y, rect = null;
   if (e && e.currentTarget && e.currentTarget.getBoundingClientRect) rect = e.currentTarget.getBoundingClientRect();
   if (rect){ x = rect.left + rect.width / 2; y = rect.top + rect.height / 2; }
   else { x = window.innerWidth / 2; y = 56; }
   var radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
-  var root = document.documentElement;
-  root.style.setProperty("--reveal-x", x + "px");
-  root.style.setProperty("--reveal-y", y + "px");
-  root.style.setProperty("--reveal-r", radius + "px");
-  document.startViewTransition(function(){ applyTheme(next); });
+  /* 支持 View Transitions 的浏览器走原生圆形扩散 */
+  if (typeof document.startViewTransition === "function"){
+    var root = document.documentElement;
+    root.style.setProperty("--reveal-x", x + "px");
+    root.style.setProperty("--reveal-y", y + "px");
+    root.style.setProperty("--reveal-r", radius + "px");
+    document.startViewTransition(function(){ applyTheme(next); });
+    return;
+  }
+  /* 其余环境（微信 X5、旧 iOS Safari 等无 startViewTransition）用覆盖层兜底动画 */
+  if (_themeRevealBusy){ applyTheme(next); return; }
+  themeCircleReveal(next, x, y, radius);
+}
+/* 无 View Transitions 时的圆形扩散兜底：探针读出新主题背景色 → 覆盖层以按钮为
+   圆心 clip-path 圆形铺开（0.5s）→ 铺满后切换主题并淡出覆盖层（180ms） */
+var _themeRevealBusy = false;
+function themeCircleReveal(next, x, y, radius){
+  _themeRevealBusy = true;
+  var rootEl = document.documentElement;
+  var oldTheme = rootEl.dataset.theme || "light";
+  var probe = null, bg = "";
+  try {
+    probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;background:var(--bg)";
+    rootEl.appendChild(probe);
+    rootEl.dataset.theme = next; /* 临时换主题读新背景色（同步执行，不产生绘制） */
+    bg = getComputedStyle(probe).backgroundColor;
+  } catch(err){}
+  finally {
+    try { rootEl.dataset.theme = oldTheme; } catch(e2){}
+    try { if (probe && probe.parentNode) probe.parentNode.removeChild(probe); } catch(e3){}
+  }
+  if (!bg){ applyTheme(next); _themeRevealBusy = false; return; }
+  var at = "circle(0px at " + x + "px " + y + "px)";
+  var ov = document.createElement("div");
+  ov.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:200;pointer-events:none;"
+    + "background:" + bg + ";"
+    + "-webkit-clip-path:" + at + ";clip-path:" + at + ";"
+    + "-webkit-transition:-webkit-clip-path .5s ease-in,opacity .18s ease-out;"
+    + "transition:clip-path .5s ease-in,opacity .18s ease-out;";
+  document.body.appendChild(ov);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    var full = "circle(" + radius + "px at " + x + "px " + y + "px)";
+    try { ov.style.webkitClipPath = full; } catch(err){}
+    ov.style.clipPath = full;
+  });});
+  setTimeout(function(){
+    applyTheme(next);
+    ov.style.opacity = "0";
+    setTimeout(function(){
+      if (ov.parentNode) ov.parentNode.removeChild(ov);
+      _themeRevealBusy = false;
+    }, 220);
+  }, 530);
 }
 function initThemeToggle(){
   var btns = [];
@@ -6706,6 +6975,8 @@ async function init(){
     renderAll();
     if (pendingWell != null) openWell(pendingWell);
     startPolling();
+    /* 进入管理台后稍等片刻检查是否有工程师的新回复（弹窗提醒） */
+    setTimeout(checkFeedbackReplies, 900);
   }
   var gridResizeTimer = null;
   window.addEventListener("resize", function(){
