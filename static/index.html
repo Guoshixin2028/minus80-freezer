@@ -2736,11 +2736,16 @@ function initWriterView(){
       urlInput.setAttribute("readonly", "");
     }
   });
-  var supported = ("NDEFReader" in window) && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1");
+  // ModelScope 生产环境把应用包在 iframe 里，Web NFC 只能在顶层浏览上下文用，浏览器直写会失败；
+  // 因此 iframe 下一律走 NFC Tools App 路线，仅本机直连（localhost / 非 iframe）时才允许浏览器直写。
+  var inIframe = (function(){ try { return window.top !== window.self; } catch (e) { return true; } })();
+  var supported = ("NDEFReader" in window) && !inIframe && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1");
   document.getElementById("wrSupported").hidden = !supported;
   document.getElementById("wrUnsupported").hidden = supported;
   select("store");
-  initBraceletKeyBox(urlInput, select);
+  mountBraceletKeyControls(document.getElementById("wrKeyBox"), function(){
+    urlInput.value = wrTargetUrl(wrState.kind);
+  });
   if (!supported) return;
   var statusEl = document.getElementById("wrStatus");
   var btn = document.getElementById("wrWrite");
@@ -2767,14 +2772,22 @@ function initWriterView(){
     }
   });
 }
-function initBraceletKeyBox(urlInput, selectKind){
-  var box = document.getElementById("wrKeyBox");
-  if (!box) return;
-  var chk = document.getElementById("wrKeyOn");
-  var genBtn = document.getElementById("wrKeyGen");
-  var rotBtn = document.getElementById("wrKeyRotate");
-  var hint = document.getElementById("wrKeyHint");
-  function refreshUrl(){ urlInput.value = wrTargetUrl(wrState.kind); }
+/* 通用：把手环进门码管理 UI（生成/挂失/勾选）装进指定的 .wr-keybox 容器，onChange 在状态变化时回调 */
+function mountBraceletKeyControls(box, onChange){
+  box.innerHTML = "";
+  var row = el("div", "wr-keyrow");
+  var chkWrap = el("label", "wr-keycheck");
+  var chk = el("input"); chk.type = "checkbox";
+  chkWrap.appendChild(chk);
+  chkWrap.appendChild(document.createTextNode(" "));
+  chkWrap.appendChild(el("span", null, "手环免密进门"));
+  var btns = el("span", "wr-keybtns");
+  var genBtn = el("button", "btn btn-mini", "生成进门码"); genBtn.type = "button";
+  var rotBtn = el("button", "btn btn-mini", "挂失 / 换新码"); rotBtn.type = "button";
+  btns.appendChild(genBtn); btns.appendChild(rotBtn);
+  row.appendChild(chkWrap); row.appendChild(btns);
+  var hint = el("p", "wr-keyhint");
+  box.appendChild(row); box.appendChild(hint);
   function renderKey(){
     var has = !!wrState.bkey;
     box.hidden = false;
@@ -2785,12 +2798,12 @@ function initBraceletKeyBox(urlInput, selectKind){
     hint.textContent = has
       ? "已开启：进门码会随网址烧入手环，以后碰一下手环直接进入实验室，不用再输密码。进门码只用于开门，不是实验室密码；手环丢失或人员离开时点「挂失 / 换新码」，旧手环立即失效，重新烧录即可。"
       : "生成进门码后，可把它随网址一起烧入手环：以后碰手环直接进入实验室，不用再输密码。进门码不是实验室密码，随时可以挂失换新。";
-    refreshUrl();
+    if (onChange) onChange();
   }
   chk.addEventListener("change", function(){
     wrState.keyOn = chk.checked;
     rememberKeyOn();
-    refreshUrl();
+    if (onChange) onChange();
   });
   genBtn.addEventListener("click", function(){
     genBtn.disabled = true;
@@ -2819,7 +2832,6 @@ function initBraceletKeyBox(urlInput, selectKind){
           wrState.keyOn = true;
           rememberKeyOn();
           renderKey();
-          selectKind(wrState.kind);
           toast("已换新码，旧手环全部失效，请用新网址重新烧录", "ok");
         }).catch(function(e){
           toast("换新失败：" + (e.message || ""), "err");
@@ -3322,11 +3334,13 @@ var CHANGELOG = [
     date: "2026-10-05",
     zh: [
       "NFC 手环支持免密进门：在烧录页（碰手环打开的页面 → 设置里的「烧录 NFC 手环」入口）点一次「生成进门码」，进门码就会自动拼进手环网址；重新烧录后，以后任何人碰一下手环都直接进入实验室，不用再输实验室密码。进门码只是一把可挂失的「门卡」、不是实验室密码（改密码、解散实验室等仍需密码）；手环丢失、损坏或成员离开时，在烧录页点「挂失 / 换新码」，所有旧手环立即失效，用新网址重烧即可",
-      "设置弹窗里展示的手环写入链接会在进门码生成后自动带上免密参数，iPhone 用 NFC App 烧录时复制到的也是免密链接"
+      "设置弹窗里展示的手环写入链接会在进门码生成后自动带上免密参数，iPhone 用 NFC App 烧录时复制到的也是免密链接",
+      "进门码管理（生成 / 挂失换新）直接放进「设置」弹窗，不用再跑到烧录页；同时因 ModelScope 云端把应用包在 iframe 里导致浏览器直写 NFC 失败（Web NFC 仅顶层上下文可用），烧录页改为始终引导用 NFC Tools 等 App 复制网址写入，浏览器直写仅在本机直连时可用"
     ],
     en: [
       "NFC bracelets now support passwordless entry: on the bracelet write page (open it from Settings → Write NFC bracelet), tap \"Create entry key\" once — the key is appended to the bracelet URL automatically. After rewriting the bracelets, anyone tapping a bracelet enters the lab directly without typing the lab password. The entry key is a revocable \"door card\", not the lab password (changing the password or dissolving the lab still needs the password). If a bracelet is lost/broken or a member leaves, tap \"Report lost / new key\": all old bracelets stop working immediately and just need rewriting with the new URL",
-      "The bracelet URLs shown in Settings automatically include the entry key once it exists, so iPhone users copying the link into an NFC app get the passwordless URL too"
+      "The bracelet URLs shown in Settings automatically include the entry key once it exists, so iPhone users copying the link into an NFC app get the passwordless URL too",
+      "Entry-key management (create / revoke-and-replace) now lives directly in the Settings dialog, no need to visit the write page. Also, since ModelScope wraps the app in an iframe and Web NFC only works in a top-level browsing context, browser-based NFC writing was failing in production; the write page now always guides users to copy the URL into an NFC app (e.g. NFC Tools), and browser direct-write is only enabled when running locally (non-iframe)"
     ]
   },
   {
@@ -3688,30 +3702,28 @@ function openSettingsModal(){
   var wrLine = el("p", null, "");
   wrLine.style.cssText = "margin:0 0 8px;padding:10px;background:var(--brand-soft);border:1px solid var(--line);border-radius:6px";
   wrLine.appendChild(icon("smartphone", "sm"));
-  wrLine.appendChild(document.createTextNode(" 手机写手环：安卓 Chrome 打开 "));
+  wrLine.appendChild(document.createTextNode(" 烧录手环：手机浏览器打开 "));
   var wrA = el("a", null, base + "/?view=write");
   wrA.href = base + "/?view=write";
   wrLine.appendChild(wrA);
-  wrLine.appendChild(document.createTextNode("\uff0c可选 存/\u53d6/\u5355 \u540e\u78b0\u624b\u73af\u76f4\u63a5\u5199\u5165\uff08iPhone \u7528 NFC Tools App\uff09"));
+  wrLine.appendChild(document.createTextNode(" 复制网址，用 NFC Tools 等 App 写入手环（浏览器直写在云端 iframe 里不可用）"));
   urlBox.appendChild(wrLine);
+  // 手环进门码管理（生成 / 挂失换新）直接放在设置里，链接实时带上 ?bk
+  var keyBox = el("div", "wr-keybox");
+  urlBox.appendChild(keyBox);
   urlBox.appendChild(el("p", null, "手环写入链接："));
   var twoUrls = el("p", null, "");
   twoUrls.style.cssText = "margin:4px 0;padding:6px;background:var(--panel-2);border-radius:4px";
-  twoUrls.textContent = "存\u624b\u73af\uff1a" + base + "/?view=store\u3000\u53d6\u624b\u73af\uff1a" + base + "/?view=search";
   var oneUrl = el("p", null, "");
   oneUrl.style.cssText = "margin:4px 0;padding:6px;background:var(--panel-2);border-radius:4px";
-  oneUrl.textContent = "\u5355\u624b\u73af\uff08tap\uff09\uff1a" + base + "/?view=tap";
-  var keyNote = el("p", null, "");
-  keyNote.style.cssText = "margin:4px 0 0;font-size:11.5px;color:var(--ink-3)";
-  urlBox.appendChild(twoUrls); urlBox.appendChild(oneUrl); urlBox.appendChild(keyNote);
-  // 若实验室已生成手环进门码，设置里展示的链接同步带上 ?bk（并提示去烧录页管理/挂失）
-  loadBraceletKey().then(function(k){
-    if (!k) return;
-    var suf = "&bk=" + encodeURIComponent(k);
+  function refreshUrls(){
+    var suf = (wrState.bkey && wrState.keyOn) ? "&bk=" + encodeURIComponent(wrState.bkey) : "";
     twoUrls.textContent = "存\u624b\u73af\uff1a" + base + "/?view=store" + suf + "\u3000\u53d6\u624b\u73af\uff1a" + base + "/?view=search" + suf;
     oneUrl.textContent = "\u5355\u624b\u73af\uff08tap\uff09\uff1a" + base + "/?view=tap" + suf;
-    keyNote.textContent = "以上链接已含免密进门码，碰手环直接进实验室；进门码管理（生成 / 挂失换新）请打开烧录页";
-  });
+  }
+  urlBox.appendChild(twoUrls); urlBox.appendChild(oneUrl);
+  refreshUrls();
+  mountBraceletKeyControls(keyBox, refreshUrls);
   wrap.appendChild(urlBox);
 
   // 数据与语言（手机端顶栏精简后，导出入口移到这里）
