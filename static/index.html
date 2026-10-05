@@ -79,7 +79,7 @@
 [data-theme="dark"] .hit-item{background:var(--panel);border-color:#4a4426}
 [data-theme="dark"] .hit-item:hover{background:#232a1c;border-color:#6a5e2e}
 [data-theme="dark"] .hit-item mark{background:#8a6d1f;color:#ffe9a8}
-[data-theme="dark"] .ac-pop{background:var(--panel);border-color:var(--line)}
+[data-theme="dark"] .ac-pop,[data-theme="dark"] .sqh-pop{background:var(--panel);border-color:var(--line)}
 [data-theme="dark"] .ac-item{background:var(--panel)}
 [data-theme="dark"] .ac-item:hover,[data-theme="dark"] .ac-item.ac-on{background:var(--brand-soft);color:var(--brand)}
 [data-theme="dark"] .seg button[aria-pressed="true"],
@@ -780,17 +780,26 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
 .mv-stat{font-size:12.5px;color:var(--ink-2);background:#fff;border:1px solid var(--line-soft);border-radius:9px;padding:8px 12px;margin:12px 0}
 .mv-search{width:100%;font-size:16px;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:#fff;margin-bottom:10px}
 .mv-search:focus{outline:none;border-color:var(--brand-2);box-shadow:0 0 0 3px var(--brand-soft)}
-.sq-history{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:-4px 0 10px;font-size:12.5px}
-.sq-history .sqh-lbl{color:var(--ink-3);font-weight:600}
-.sq-history .sqh-chip{
+/* 搜索历史浮层：点击任一主搜索框后在其下方弹出（全局唯一，fixed 定位） */
+.sqh-pop{
+  position:fixed;left:0;top:0;z-index:85;display:none;
+  min-width:180px;max-width:min(440px,92vw);max-height:240px;overflow-y:auto;
+  background:#fff;border:1px solid #c4d5e6;border-radius:10px;
+  box-shadow:0 10px 32px rgba(8,25,45,.2);padding:8px 10px;margin:0;
+}
+.sqh-pop.show{display:block}
+.sqh-pop .sqh-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px}
+.sqh-lbl{color:var(--ink-3);font-weight:600}
+.sqh-chip{
   border:1px solid var(--line);background:var(--panel-2);color:var(--ink-1);
   border-radius:14px;padding:3px 11px;cursor:pointer;font-size:12px;line-height:1.5;
 }
-.sq-history .sqh-chip:hover{border-color:var(--brand-2);color:var(--brand-2)}
-.sq-history .sqh-clear{
+.sqh-chip:hover{border-color:var(--brand-2);color:var(--brand-2)}
+.sqh-clear{
   border:none;background:none;color:var(--ink-3);cursor:pointer;font-size:12px;padding:3px 6px;
 }
-.sq-history .sqh-clear:hover{color:#ff3b30}
+.sqh-clear:hover{color:#ff3b30}
+.sqh-empty{color:var(--ink-3);font-size:12.5px;padding:2px 4px}
 .mv-adv{margin:0 0 8px;font-size:13px}
 .mv-adv summary{cursor:pointer;color:var(--ink-2);font-weight:600;padding:6px 0;user-select:none}
 .mv-adv summary::marker{color:var(--ink-3)}
@@ -1180,7 +1189,6 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
     <h2 class="mv-h"><svg class="ic ic-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg> 取菌 / 查找</h2>
     <p class="mv-sub">搜索菌名 &rarr; 查看位置 &rarr; 登记取出</p>
     <input type="search" id="sq" class="mv-search" placeholder="菌种、质粒、保存人、备注、孔位号" autocomplete="off">
-    <div class="sq-history" id="sqHistory" hidden></div>
     <details class="mv-adv">
       <summary>高级筛选</summary>
       <div class="adv-grid">
@@ -2042,6 +2050,8 @@ var I18N = {
   "已清空全部菌种记录": "All strain records cleared",
   "将删除这一格的菌种记录：": "The strain record in this well will be deleted: ",
   "登记这一格": "Register this well",
+  "暂无搜索记录": "No recent searches",
+  "最近搜索：": "Recent: ",
   "清空": "Clear",
   "信息未填完整": "Incomplete information",
   "以下信息还没填写：": "Missing fields: ",
@@ -3310,9 +3320,10 @@ function renderSearchQ(){
     b.type = "button";
     b.appendChild(el("span", "p", posLabel(h.box, h.pos)));
     var t = el("span", "t");
-    t.appendChild(el("div", "t1", h.well.strain || "未填菌种"));
+    var plasmid = (h.well.plasmid && h.well.plasmid !== "-") ? h.well.plasmid : "";
+    t.appendChild(el("div", "t1", plasmid || h.well.strain || "未填菌种"));
     t.appendChild(el("div", "t2",
-      (h.well.plasmid && h.well.plasmid !== "-" ? h.well.plasmid : "无质粒") +
+      (plasmid ? (h.well.strain || "未填菌种") : "无质粒") +
       " · " + (h.well.keeper || "未填保存人") + " · " + (h.well.date || "")));
     b.appendChild(t);
     b.appendChild(el("span", "loc", h.rack.name + " / " + h.box.name));
@@ -3376,44 +3387,86 @@ function sqTake(){
   sqCurrent = null;
 }
 
-/* ---- 搜索历史（按客户端 IP + 实验室隔离，存服务端） ---- */
+/* ---- 搜索历史（按客户端 IP + 实验室隔离，存服务端） ----
+   所有主搜索框（管理台顶栏 #search、取菌页 #sq）点击/聚焦后在其下方弹出浮层，
+   显示本网络下的最近搜索；点 chip 回填并立即触发该框自己的搜索逻辑。 */
 var _sqLastRecorded = "";
-function renderSearchHistory(queries){
-  var host = document.getElementById("sqHistory");
-  if (!host) return;
-  host.innerHTML = "";
-  if (!queries || !queries.length) { host.hidden = true; return; }
-  host.hidden = false;
-  var head = el("span", "sqh-lbl", "最近搜索：");
-  host.appendChild(head);
-  queries.forEach(function(q){
+var _sqHistCache = null;   /* null=尚未拉取；[]=已拉取但无记录 */
+var _sqhPop = null;        /* 当前打开的浮层元素 */
+var _sqhAnchor = null;     /* 当前浮层依附的输入框 */
+var _sqhOnPick = null;
+
+function hideSearchHistoryPop(){
+  if (_sqhPop && _sqhPop.parentNode) _sqhPop.parentNode.removeChild(_sqhPop);
+  _sqhPop = null; _sqhAnchor = null; _sqhOnPick = null;
+}
+function _sqhPaint(){
+  /* 依据 _sqHistCache 重绘已打开的浮层内容 */
+  if (!_sqhPop) return;
+  _sqhPop.innerHTML = "";
+  var row = el("div", "sqh-row", "");
+  if (!_sqHistCache || !_sqHistCache.length){
+    row.appendChild(el("span", "sqh-empty", "暂无搜索记录"));
+    _sqhPop.appendChild(row);
+    return;
+  }
+  row.appendChild(el("span", "sqh-lbl", "最近搜索："));
+  _sqHistCache.forEach(function(q){
     var chip = el("button", "sqh-chip", q);
     chip.type = "button";
     chip.title = "用「" + q + "」搜索";
+    chip.addEventListener("mousedown", function(e){ e.preventDefault(); });  /* 防止输入框失焦 */
     chip.addEventListener("click", function(){
-      var si = document.getElementById("sq");
-      si.value = q;
-      clearTimeout(sqDebounce);
-      renderSearchQ();
-      recordSearchHistory(q);
+      var inp = _sqhAnchor, fn = _sqhOnPick;
+      if (inp) inp.value = q;
+      hideSearchHistoryPop();
+      if (fn) fn(q);
     });
-    host.appendChild(chip);
+    row.appendChild(chip);
   });
   var clear = el("button", "sqh-clear", "清空");
   clear.type = "button";
   clear.title = "清空搜索历史";
+  clear.addEventListener("mousedown", function(e){ e.preventDefault(); });
   clear.addEventListener("click", function(){
     fetch(API_BASE + "/api/search-history", { method: "DELETE", headers: authHeaders() })
       .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(j){ renderSearchHistory((j && j.queries) || []); })
+      .then(function(j){
+        _sqHistCache = (j && j.queries) || [];
+        if (!_sqHistCache.length) hideSearchHistoryPop(); else _sqhPaint();
+      })
       .catch(function(){});
   });
-  host.appendChild(clear);
+  row.appendChild(clear);
+  _sqhPop.appendChild(row);
+}
+function showSearchHistoryPop(inputEl, onPick){
+  hideSearchHistoryPop();
+  _sqhAnchor = inputEl; _sqhOnPick = onPick;
+  var pop = el("div", "sqh-pop");
+  document.body.appendChild(pop);
+  _sqhPop = pop;
+  var r = inputEl.getBoundingClientRect();
+  pop.style.left = Math.max(6, Math.min(r.left, window.innerWidth - 200)) + "px";
+  pop.style.minWidth = Math.min(Math.max(r.width, 180), window.innerWidth - 12) + "px";
+  var below = r.bottom + 6, estH = 120;
+  if (below + estH > window.innerHeight && r.top - 6 - estH > 0){
+    pop.style.top = Math.max(6, r.top - 6 - estH) + "px";
+  } else {
+    pop.style.top = below + "px";
+  }
+  pop.classList.add("show");
+  _sqhPaint();
+  if (_sqHistCache === null) loadSearchHistory();
 }
 function loadSearchHistory(){
   fetch(API_BASE + "/api/search-history", { cache: "no-store", headers: authHeaders() })
     .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(j){ if (j) renderSearchHistory(j.queries || []); })
+    .then(function(j){
+      if (!j) return;
+      _sqHistCache = j.queries || [];
+      _sqhPaint();
+    })
     .catch(function(){});
 }
 function recordSearchHistory(q){
@@ -3421,9 +3474,23 @@ function recordSearchHistory(q){
   if (q.length < 2 || q === _sqLastRecorded) return;
   _sqLastRecorded = q;
   labPost("/api/search-history", { query: q })
-    .then(function(j){ renderSearchHistory((j && j.queries) || []); })
+    .then(function(j){
+      if (j && j.queries){ _sqHistCache = j.queries; _sqhPaint(); }
+    })
     .catch(function(){});
 }
+/* 全局关闭：点浮层与输入框之外、Esc、滚动、缩放 */
+document.addEventListener("mousedown", function(e){
+  if (!_sqhPop) return;
+  if (e.target.closest && e.target.closest(".sqh-pop")) return;
+  if (_sqhAnchor && (e.target === _sqhAnchor)) return;
+  hideSearchHistoryPop();
+});
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape" && _sqhPop) hideSearchHistoryPop();
+});
+window.addEventListener("scroll", function(){ if (_sqhPop) hideSearchHistoryPop(); }, true);
+window.addEventListener("resize", function(){ if (_sqhPop) hideSearchHistoryPop(); });
 function initSearchView(){
   refreshDatalists();
   fillSqBoxSelect();
@@ -3432,6 +3499,7 @@ function initSearchView(){
     window._sqInited = true;
     ["sq", "sqStrain", "sqPlasmid", "sqKeeper"].forEach(function(id){
       document.getElementById(id).addEventListener("input", function(){
+        hideSearchHistoryPop();  /* 输入时关闭历史浮层，避免遮挡 */
         clearTimeout(sqDebounce);
         sqDebounce = setTimeout(function(){
           renderSearchQ();
@@ -3439,6 +3507,18 @@ function initSearchView(){
         }, 180);
       });
     });
+    /* 点击/聚焦搜索框时弹出历史浮层（点 chip 回填并立即搜索） */
+    var sqInput = document.getElementById("sq");
+    var sqPop = function(){
+      if (window._sqNoPop){ window._sqNoPop = false; return; }  /* 进页自动聚焦不弹 */
+      showSearchHistoryPop(sqInput, function(q){
+        clearTimeout(sqDebounce);
+        renderSearchQ();
+        recordSearchHistory(q);
+      });
+    };
+    sqInput.addEventListener("focus", sqPop);
+    sqInput.addEventListener("click", sqPop);
     ["sqBox", "sqStatus"].forEach(function(id){
       document.getElementById(id).addEventListener("change", renderSearchQ);
     });
@@ -3449,7 +3529,7 @@ function initSearchView(){
   renderSearchQ();
   loadSearchHistory();
   var si = document.getElementById("sq");
-  if (si) setTimeout(function(){ si.focus(); }, 100);
+  if (si) { window._sqNoPop = true; setTimeout(function(){ si.focus(); }, 100); }
 }
 
 function getRack(){
@@ -3550,6 +3630,17 @@ function cellGlyph(well){
 /* SECTION: render modes */
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
+  {
+    date: "2026-10-06",
+    zh: [
+      "所有搜索栏（管理台顶栏、取菌页）点击后都会弹出最近搜索记录浮层，点击即可回填并搜索；每个网络（IP）独立保存最近 15 条",
+      "取菌搜索结果列表中，质粒名现在放大显示在上，菌种名缩小显示在下，方便一眼看到质粒信息"
+    ],
+    en: [
+      "All search bars (top bar on console, retrieve page) now show a recent-searches popup on tap — tap any chip to fill in and search; last 15 searches per network (IP) saved independently",
+      "In the retrieve search results, the plasmid name is now shown larger on top while the strain name is smaller below, making plasmid info easier to spot at a glance"
+    ]
+  },
   {
     date: "2026-10-06",
     zh: [
@@ -6349,11 +6440,24 @@ function bindEvents(){
   var si = document.getElementById("search");
   var sbx = document.getElementById("searchbox");
   si.addEventListener("input", function(){
+    hideSearchHistoryPop();
     state.query = si.value;
     sbx.classList.toggle("has-q", !!si.value.trim());
     renderGrid();
     recordSearchHistory(si.value);
   });
+  /* 点击/聚焦顶栏搜索框时弹出历史浮层（点 chip 回填并立即搜索） */
+  var siPop = function(){
+    showSearchHistoryPop(si, function(q){
+      si.value = q;
+      state.query = q;
+      sbx.classList.add("has-q");
+      renderGrid();
+      recordSearchHistory(q);
+    });
+  };
+  si.addEventListener("focus", siPop);
+  si.addEventListener("click", siPop);
   si.addEventListener("keydown", function(e){
     if (e.key === "Escape") { si.value = ""; state.query = ""; sbx.classList.remove("has-q"); renderGrid(); }
   });
