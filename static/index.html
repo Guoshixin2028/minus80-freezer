@@ -1828,6 +1828,9 @@ var I18N = {
   "连接失败": "Connection failed",
   "离线": "Offline",
   "云端有更新": "Cloud update",
+  "已自动合并同学的修改，两边的改动都已保留": "Your classmate's edits were merged automatically — both sides are kept",
+  "云端更新较频繁，本次改动保留在本机，稍后会自动重试": "Cloud is updating frequently; your changes are kept locally and will retry automatically",
+  "同步繁忙": "Busy syncing",
   "已同步 ": "Synced ",
   "云端还没有菌种记录": "No strain records in the cloud yet",
   "搜索菌种 / 质粒 / 保存人": "Search strain / plasmid / keeper",
@@ -2509,6 +2512,9 @@ var state = {
   locateMode: false
 };
 
+function normMt(v){
+  return (typeof v === "number" && isFinite(v) && v > 0) ? v : 0;
+}
 function normalizeWell(w){
   w = (w && typeof w === "object") ? w : {};
   return {
@@ -2520,6 +2526,7 @@ function normalizeWell(w){
     color: toStr(w.color),
     note: toStr(w.note),
     takenOut: !!w.takenOut,
+    _mt: normMt(w._mt),
     takings: Array.isArray(w.takings) ? w.takings
       .filter(function(t){ return t && typeof t === "object"; })
       .map(function(t){
@@ -2549,7 +2556,8 @@ function normalizeBox(b){
   return {
     id: typeof b.id === "string" && b.id ? b.id : uid("box"),
     name: typeof b.name === "string" && b.name.trim() ? b.name.trim() : "未命名盒子",
-    rows: rows, cols: cols, wells: wells
+    rows: rows, cols: cols, wells: wells,
+    _mt: normMt(b._mt)
   };
 }
 function normalizeRack(r){
@@ -2558,7 +2566,8 @@ function normalizeRack(r){
     id: typeof r.id === "string" && r.id ? r.id : uid("rack"),
     name: typeof r.name === "string" && r.name.trim() ? r.name.trim() : "未命名铁架",
     note: typeof r.note === "string" ? r.note : "",
-    boxes: Array.isArray(r.boxes) ? r.boxes.filter(Boolean).map(normalizeBox) : []
+    boxes: Array.isArray(r.boxes) ? r.boxes.filter(Boolean).map(normalizeBox) : [],
+    _mt: normMt(r._mt)
   };
 }
 function normalizeDb(raw){
@@ -2569,7 +2578,8 @@ function normalizeDb(raw){
       defaultKeeper: db.settings && typeof db.settings.defaultKeeper === "string" ? db.settings.defaultKeeper : "",
       braceletMode: db.settings && db.settings.braceletMode === "one" ? "one" : "two",
       tubeTypes: normTubeTypes(db.settings && db.settings.tubeTypes),
-      updatedAt: db.settings && typeof db.settings.updatedAt === "string" ? db.settings.updatedAt : nowStamp()
+      updatedAt: db.settings && typeof db.settings.updatedAt === "string" ? db.settings.updatedAt : nowStamp(),
+      _mt: normMt(db.settings && db.settings._mt)
     },
     racks: Array.isArray(db.racks) ? db.racks.filter(Boolean).map(normalizeRack) : []
   };
@@ -2586,6 +2596,187 @@ function resolveSelection(racks, rackId, boxId){
   var box = rack.boxes.filter(function(b){ return b.id === boxId; })[0] || rack.boxes[0] || null;
   return { rackId: rack.id, boxId: box ? box.id : null };
 }
+
+/* SECTION: 实时协作 —— 实体级三向合并
+   base = 上次与云端同步时的快照；local = 本机当前数据；remote = 云端最新数据。
+   规则：
+   - 新增取并集；只有一端改过 -> 用改的那端；两端都改同一实体 -> 按 _mt 最后写入胜（LWW）；
+   - 一端删除、另一端修改 -> 修改优先（避免误删同学刚改的内容）；两端都删 -> 删除；
+   - 取出记录(takings)/日志(log) 是追加型列表，按 id 取并集；
+   - selected（当前看哪个铁架/盒）是纯本机视图状态，永远保留本机的。 */
+var baseDb = null;   /* 最近一次同步成功后的规范化快照 */
+function snapshotDb(db){
+  return db ? JSON.parse(JSON.stringify(db)) : null;
+}
+/* 结构签名：忽略 _mt（合并时间戳），用于判断"内容是否真的变了" */
+function sig(o){
+  return JSON.stringify(o, function(k, v){ return k === "_mt" ? undefined : v; });
+}
+function sigDb(db){
+  if (!db) return "{}";
+  return JSON.stringify({ settings: db.settings, racks: db.racks, log: db.log },
+    function(k, v){ return k === "_mt" ? undefined : v; });
+}
+/* 保存前给"相对 base 发生变化"的实体打毫秒时间戳，作为 LWW 依据 */
+function stampMtimes(db, base){
+  var now = Date.now();
+  base = base || { settings: { _mt: 0 }, racks: [] };
+  if (sig(db.settings) !== sig(base.settings || {})) db.settings._mt = now;
+  var bRacks = {};
+  (base.racks || []).forEach(function(r){ bRacks[r.id] = r; });
+  db.racks.forEach(function(rack){
+    var br = bRacks[rack.id];
+    var rackChanged = !br ||
+      sig({ name: rack.name, note: rack.note }) !== sig({ name: br.name, note: br.note });
+    var bBoxes = {};
+    (br ? br.boxes : []).forEach(function(b){ bBoxes[b.id] = b; });
+    var boxMetaChanged = false;
+    rack.boxes.forEach(function(box){
+      var bb = bBoxes[box.id];
+      if (!bb || sig({ name: box.name, rows: box.rows, cols: box.cols }) !==
+                 sig({ name: bb.name, rows: bb.rows, cols: bb.cols })){
+        box._mt = now; boxMetaChanged = true;
+      }
+      var bWells = (bb && bb.wells) || {};
+      Object.keys(box.wells).forEach(function(pos){
+        var w = box.wells[pos], bw = bWells[pos];
+        if (!bw || sig(w) !== sig(bw)) w._mt = now;
+      });
+    });
+    if (rackChanged || boxMetaChanged || !br) rack._mt = now;
+  });
+}
+function unionById(){
+  var seen = {}, out = [];
+  for (var i = 0; i < arguments.length; i++){
+    var arr = arguments[i] || [];
+    for (var j = 0; j < arr.length; j++){
+      var e = arr[j];
+      if (e && e.id && seen[e.id] === undefined){ seen[e.id] = 1; out.push(e); }
+    }
+  }
+  return out;
+}
+function mergeWell(bw, lw, rw){
+  var winner = normMt(lw._mt) >= normMt(rw._mt) ? lw : rw;
+  var w = JSON.parse(JSON.stringify(winner));
+  w._mt = Math.max(normMt(lw._mt), normMt(rw._mt));
+  /* 追加型列表：两端各自新增的都保留（按 id 去重，顺序：base -> 本机 -> 云端） */
+  w.takings = unionById(bw ? bw.takings : [], lw.takings, rw.takings);
+  w.log = unionById(bw ? bw.log : [], lw.log, rw.log);
+  return w;
+}
+function mergeBox(bb, lb, rb){
+  var out = {
+    id: lb.id,
+    name: normMt(lb._mt) >= normMt(rb._mt) ? lb.name : rb.name,
+    rows: normMt(lb._mt) >= normMt(rb._mt) ? lb.rows : rb.rows,
+    cols: normMt(lb._mt) >= normMt(rb._mt) ? lb.cols : rb.cols,
+    wells: {},
+    _mt: Math.max(normMt(lb._mt), normMt(rb._mt))
+  };
+  var bWells = (bb && bb.wells) || {}, lWells = lb.wells || {}, rWells = rb.wells || {};
+  var poss = {};
+  Object.keys(bWells).forEach(function(p){ poss[p] = 1; });
+  Object.keys(lWells).forEach(function(p){ poss[p] = 1; });
+  Object.keys(rWells).forEach(function(p){ poss[p] = 1; });
+  Object.keys(poss).forEach(function(pos){
+    var bw = bWells[pos], lw = lWells[pos], rw = rWells[pos];
+    if (lw && !rw){
+      if (!bw) out.wells[pos] = lw;                       /* 本机新增 */
+      else if (sig(lw) !== sig(bw)) out.wells[pos] = lw; /* 云端删了、本机改了 -> 改优先 */
+      /* 否则尊重云端删除 */
+    } else if (rw && !lw){
+      if (!bw) out.wells[pos] = rw;
+      else if (sig(rw) !== sig(bw)) out.wells[pos] = rw;
+    } else if (lw && rw){
+      if (!bw){
+        /* 两端都在同一格新建 -> LWW */
+        out.wells[pos] = normMt(lw._mt) >= normMt(rw._mt) ? JSON.parse(JSON.stringify(lw))
+                                                          : JSON.parse(JSON.stringify(rw));
+      } else {
+        var lc = sig(lw) !== sig(bw), rc = sig(rw) !== sig(bw);
+        if (!lc && !rc) out.wells[pos] = rw;
+        else if (lc && !rc) out.wells[pos] = lw;
+        else if (rc && !lc) out.wells[pos] = rw;
+        else out.wells[pos] = mergeWell(bw, lw, rw);       /* 两端都改 -> LWW+列表并集 */
+      }
+    }
+  });
+  return out;
+}
+function mergeRack(br, lr, rr){
+  var lWin = normMt(lr._mt) >= normMt(rr._mt);
+  var out = {
+    id: lr.id,
+    name: lWin ? lr.name : rr.name,
+    note: lWin ? lr.note : rr.note,
+    boxes: [],
+    _mt: Math.max(normMt(lr._mt), normMt(rr._mt))
+  };
+  var bBoxes = {}, lBoxes = {}, rBoxes = {};
+  (br ? br.boxes : []).forEach(function(b){ bBoxes[b.id] = b; });
+  lr.boxes.forEach(function(b){ lBoxes[b.id] = b; });
+  rr.boxes.forEach(function(b){ rBoxes[b.id] = b; });
+  var ids = {};
+  Object.keys(bBoxes).forEach(function(k){ ids[k] = 1; });
+  Object.keys(lBoxes).forEach(function(k){ ids[k] = 1; });
+  Object.keys(rBoxes).forEach(function(k){ ids[k] = 1; });
+  Object.keys(ids).forEach(function(id){
+    var bb = bBoxes[id], lb = lBoxes[id], rb = rBoxes[id];
+    if (lb && !rb){
+      if (!bb) out.boxes.push(lb);
+      else if (sig(lb) !== sig(bb)) out.boxes.push(lb);
+    } else if (rb && !lb){
+      if (!bb) out.boxes.push(rb);
+      else if (sig(rb) !== sig(bb)) out.boxes.push(rb);
+    } else if (lb && rb){
+      if (!bb) out.boxes.push(mergeBox(null, lb, rb));
+      else if (sig(lb) === sig(bb) && sig(rb) === sig(bb)) out.boxes.push(rb);
+      else out.boxes.push(mergeBox(bb, lb, rb));
+    }
+  });
+  return out;
+}
+function indexRacks(racks){
+  var m = {};
+  (racks || []).forEach(function(r){ m[r.id] = r; });
+  return m;
+}
+/* 三向合并主入口；local/remote 会先规范化，输出也是规范化的 db */
+function mergeDbs(base, local, remote){
+  var L = normalizeDb(local);
+  var R = normalizeDb(remote);
+  var B = base ? normalizeDb(base) : { settings: { _mt: 0 }, racks: [], log: [] };
+  var out = {
+    version: 1,
+    settings: normMt(L.settings._mt) >= normMt(R.settings._mt) ? L.settings : R.settings,
+    racks: [],
+    log: unionById(B.log, L.log, R.log).slice(-LAB_LOG_MAX),
+    selected: local.selected || L.selected
+  };
+  var bM = indexRacks(B.racks), lM = indexRacks(L.racks), rM = indexRacks(R.racks);
+  var ids = {};
+  Object.keys(bM).forEach(function(k){ ids[k] = 1; });
+  Object.keys(lM).forEach(function(k){ ids[k] = 1; });
+  Object.keys(rM).forEach(function(k){ ids[k] = 1; });
+  Object.keys(ids).forEach(function(id){
+    var br = bM[id], lr = lM[id], rr = rM[id];
+    if (lr && !rr){
+      if (!br) out.racks.push(lr);
+      else if (sig(lr) !== sig(br)) out.racks.push(lr);
+    } else if (rr && !lr){
+      if (!br) out.racks.push(rr);
+      else if (sig(rr) !== sig(br)) out.racks.push(rr);
+    } else if (lr && rr){
+      if (!br) out.racks.push(mergeRack(null, lr, rr));
+      else if (sig(lr) === sig(br) && sig(rr) === sig(br)) out.racks.push(rr);
+      else out.racks.push(mergeRack(br, lr, rr));
+    }
+  });
+  return normalizeDb(out);
+}
+
 /* SECTION: cloud api */
 var API_BASE = (window.FREEZER_API_BASE || "").replace(/\/+$/, "");
 var apiRev = null;          // 当前云端版本号，用于乐观并发校验
@@ -2641,46 +2832,71 @@ async function loadDb(){
   try {
     var j = await fetchCloud();
     if (!j || !j.db || !Array.isArray(j.db.racks)) {
-      var seeded = seedData();
+      var seeded = normalizeDb(seedData());
+      state.db = seeded;
       var ok = await putCloud(seeded, true);
       if (!ok) throw new Error("初始化云端数据失败");
-      return normalizeDb(seeded);
+      return seeded;
     }
     apiRev = j.rev;
+    var loaded = normalizeDb(j.db);
+    baseDb = snapshotDb(loaded);
     setSync("ok", "已连接");
-    return normalizeDb(j.db);
+    return loaded;
   } catch (e) {
     setSync("err", "连接失败");
     throw e;
   }
 }
+/* 保存到云端：遇到 409（同学刚改过）自动三向合并后重试，全程不打扰用户。
+   最多自动重试 4 轮；force=true（初始化/强制覆盖）不参与合并。 */
 async function putCloud(db, force){
   savingNow = true;
   try {
     setSync("saving", "同步中…");
-    var r = await fetch(API_BASE + "/api/db", {
-      method: "PUT",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ rev: apiRev, db: db, force: !!force })
-    });
-    if (r.status === 401 || r.status === 403) {
-      clearLabSession();
-      showLabGate();
-      setSync("err", "未加入实验室");
-      return false;
+    var curDb = normalizeDb(db);
+    var mergedRemote = false;
+    for (var attempt = 0; attempt < 5; attempt++){
+      var r = await fetch(API_BASE + "/api/db", {
+        method: "PUT",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rev: apiRev, db: curDb, force: !!force })
+      });
+      if (r.status === 401 || r.status === 403) {
+        clearLabSession();
+        showLabGate();
+        setSync("err", "未加入实验室");
+        return false;
+      }
+      if (r.status === 409 && !force) {
+        var jc = await r.json().catch(function(){ return null; });
+        if (!jc || !jc.db) break;
+        /* 云端有新版本：把本机改动与云端改动自动合并，换新 rev 后重试 */
+        var remoteDb = normalizeDb(jc.db);
+        curDb = mergeDbs(baseDb, curDb, remoteDb);
+        curDb.selected = (state.db && state.db.selected) || curDb.selected;
+        state.db = curDb;
+        apiRev = jc.rev;
+        mergedRemote = true;
+        continue;
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      var j2 = await r.json();
+      apiRev = j2.rev;
+      baseDb = snapshotDb(curDb);
+      setSync("ok", "已同步 " + nowStamp().slice(11));
+      if (mergedRemote){
+        /* 只有真的合并进了云端内容才整体替换 state.db；否则保留原对象身份 */
+        state.db = curDb;
+        refreshViews();
+        toast("已自动合并同学的修改，两边的改动都已保留", "ok");
+      }
+      return true;
     }
-    if (r.status === 409) {
-      var j = await r.json();
-      setSync("err", "版本冲突");
-      askConflict(db, j);
-      return false;
-    }
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    var j2 = await r.json();
-    apiRev = j2.rev;
-    setSync("ok", "已同步 " + nowStamp().slice(11));
-    hideUpdatePill();
-    return true;
+    /* 重试轮次耗尽（理论上几乎不会发生）：最后再试一次强制覆盖前先保留本地 */
+    setSync("err", "同步繁忙");
+    toast("云端更新较频繁，本次改动保留在本机，稍后会自动重试", "err");
+    return false;
   } catch (e) {
     setSync("err", "离线");
     toast("保存失败：无法连接服务器，改动尚未同步到云端", "err");
@@ -2689,77 +2905,110 @@ async function putCloud(db, force){
     savingNow = false;
   }
 }
-function askConflict(localDb, remote){
-  var remoteAt = (remote && remote.db && remote.db.settings && remote.db.settings.updatedAt) || "未知";
-  openModal("保存冲突", [
-    el("p", null, "云端数据刚刚被其他人更新过（更新时间：" + remoteAt + "）。"),
-    el("p", null, "你的这次修改还没有写入云端，请选择处理方式：")
-  ], [
-    { label: "取消", kind: "" },
-    { label: "放弃我的修改", kind: "", fn: function(){
-        apiRev = remote.rev;
-        state.db = normalizeDb(remote.db);
-        state.selectedWell = null;
-        closeDetail();
-        renderAll();
-        setSync("ok", "已加载最新");
-        toast("已加载云端最新版本", "ok");
-      } },
-    { label: "用我的版本覆盖", kind: "danger", fn: function(){
-        putCloud(localDb, true).then(function(ok){ if (ok) renderAll(); });
-      } }
-  ]);
-}
 function saveDb(next){
   var db = next || state.db;
   db.settings.updatedAt = nowStamp();
+  stampMtimes(db, baseDb);
   var run = saveChain.then(function(){ return putCloud(db, false); });
   saveChain = run.then(function(){}, function(){});
   return run;
 }
 function persist(){ saveDb(state.db); }
 
-/* SECTION: polling & refresh */
-function showUpdatePill(){ document.getElementById("updatePill").classList.add("show"); }
-function hideUpdatePill(){ document.getElementById("updatePill").classList.remove("show"); }
+/* SECTION: polling & refresh（实时协作：云端改动 3 秒内自动出现在本机，无需确认） */
+var applyingRemote = false;     /* 是否正在应用云端数据，避免轮询重入 */
+var refreshDeferred = false;    /* 详情面板正在输入时，把重绘推迟到失焦后 */
+function hideUpdatePill(){
+  var p = document.getElementById("updatePill");
+  if (p) p.classList.remove("show");
+}
+/* 判断详情面板里是否有表单正在编辑（此时重建 DOM 会抢走焦点、打断输入） */
+function detailFormFocused(){
+  var a = document.activeElement;
+  if (!a || !a.closest) return false;
+  if (!a.closest("#detail")) return false;
+  return /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName);
+}
+function wristViewOpen(id){
+  var n = document.getElementById(id);
+  return n && !n.hidden;
+}
+/* 合并/云端更新后刷新所有视图；详情面板输入中则只刷其它区域，失焦后补刷详情 */
+function refreshViews(force){
+  renderSidebar();
+  renderStageHead();
+  renderLegend();
+  renderGrid();
+  if (wristViewOpen("searchView")) renderSearchQ();
+  if (!force && detailFormFocused()){
+    if (!refreshDeferred){
+      refreshDeferred = true;
+      var handler = function(){
+        refreshDeferred = false;
+        document.removeEventListener("focusout", handler, true);
+        clearTimeout(failTimer);
+        renderAll();
+        if (wristViewOpen("searchView")) renderSearchQ();
+      };
+      var failTimer = setTimeout(function(){
+        refreshDeferred = false;
+        document.removeEventListener("focusout", handler, true);
+      }, 10000);
+      document.addEventListener("focusout", handler, true);
+    }
+  } else {
+    renderDetail();
+  }
+}
+function fetchRev(){
+  return fetch(API_BASE + "/api/rev", { cache: "no-store", headers: authHeaders() }).then(function(r){
+    if (r.status === 401 || r.status === 403){
+      clearLabSession(); showLabGate(); throw new Error("需要选择实验室");
+    }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  });
+}
 function startPolling(){
-  setInterval(function(){
-    if (document.hidden || savingNow) return;
-    fetchCloud().then(function(j){
-      if (!j || !j.db) return;
-      if (j.rev !== apiRev) showUpdatePill();
-      else hideUpdatePill();
-    }).catch(function(){
-      setSync("err", "离线");
-    });
-  }, 15000);
+  setInterval(pollTick, 3000);
+}
+async function pollTick(){
+  if (document.hidden || savingNow || applyingRemote || !state.db) return;
+  var full = null;
+  try {
+    var j = await fetchRev();
+    if (!j || j.rev === undefined || j.rev === apiRev) return;
+    applyingRemote = true;
+    full = await fetchCloud();
+    if (!full || !full.db) return;
+    var remote = normalizeDb(full.db);
+    var localChanged = !baseDb || sigDb(state.db) !== sigDb(baseDb);
+    if (!localChanged){
+      /* 本机没有未落盘改动：直接采用云端版本，保留本机浏览位置 */
+      remote.selected = state.db.selected;
+      state.db = remote;
+      apiRev = full.rev;
+      baseDb = snapshotDb(remote);
+      refreshViews();
+      setSync("ok", "已同步 " + nowStamp().slice(11));
+    } else {
+      /* 本机也有改动：三向合并 -> 立即回推（PUT 若再遇 409 会继续自动合并） */
+      var merged = mergeDbs(baseDb, state.db, remote);
+      merged.selected = state.db.selected;
+      state.db = merged;
+      apiRev = full.rev;
+      refreshViews();
+      await saveDb(merged);
+    }
+  } catch (e){
+    /* 网络抖动不提示，下一轮 3 秒后自然恢复 */
+  } finally {
+    applyingRemote = false;
+  }
 }
 function onUpdatePillClick(){
-  openModal("加载云端最新版本？", [
-    el("p", null, "检测到其他人刚刚更新了云端数据（NFC 碰触的另一位同学、或另一台设备上的操作）。"),
-    state.selectedWell
-      ? el("p", null, "注意：右侧面板中尚未保存的表单内容会丢失。")
-      : el("p", null, "当前页面将刷新为最新数据。")
-  ], [
-    { label: "取消", kind: "" },
-    { label: "加载最新", kind: "primary", fn: async function(){
-        try {
-          var j = await fetchCloud();
-          if (j && j.db) {
-            apiRev = j.rev;
-            state.db = normalizeDb(j.db);
-            state.selectedWell = null;
-            state.legendFilter = null;
-            hideUpdatePill();
-            closeDetail();
-            renderAll();
-            setSync("ok", "已加载最新");
-          }
-        } catch (e) {
-          toast("拉取最新数据失败，请稍后重试", "err");
-        }
-      } }
-  ]);
+  /* 保留按钮兼容：实时模式下 pill 不会出现，点击时手动拉一次最新 */
+  pollTick();
 }
 
 /* SECTION: NFC url params（?rack=铁架1&box=A1&well=B3 之类） */
@@ -3630,6 +3879,19 @@ function cellGlyph(well){
 /* SECTION: render modes */
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
+  {
+    date: "2026-10-06",
+    zh: [
+      "多人同时编辑不再需要二选一：你和同学前后脚修改时，系统会自动把两边的改动合并（各改各的内容都会保留），不再弹出「保留我的 / 用云端的」确认框",
+      "改动保存后约 3 秒内自动出现在其他同学的屏幕上，无需手动点「云端有更新」加载；你正在输入框打字时会等你输入完再刷新该面板，不会打断编辑",
+      "同一管菌两端同时改：较晚的修改生效，但双方各自新增的取出记录和改动日志都会保留"
+    ],
+    en: [
+      "No more choose-a-side when several people edit at once: if you and a classmate edit around the same time, both sets of changes are merged automatically — no \"keep mine / use cloud\" dialog",
+      "Saved changes now appear on everyone else's screen within about 3 seconds, with no manual reload needed; if you are typing in a form, its panel waits until you finish so your typing is never interrupted",
+      "If the same tube is edited on two screens simultaneously, the later edit wins, while checkout records and change logs added on either side are all preserved"
+    ]
+  },
   {
     date: "2026-10-06",
     zh: [
@@ -6379,7 +6641,11 @@ function replaceImport(incoming){
   state.selectedWell = null;
   state.legendFilter = null;
   closeDetail();
-  persist(); renderAll();
+  incoming.settings.updatedAt = nowStamp();
+  stampMtimes(incoming, null);
+  /* 用户明确选择「覆盖当前数据」：强制覆盖云端，不做合并 */
+  putCloud(incoming, true).then(function(ok){ if (ok) renderAll(); });
+  renderAll();
   toast("已用备份文件覆盖当前数据", "ok");
 }
 function askReset(){
@@ -6397,11 +6663,16 @@ function askReset(){
       toast("已清空全部菌种记录", "ok");
     } },
     { label: "载入示例数据", kind: "", fn: function(){
-      state.db = normalizeDb(seedData());
+      var seeded = normalizeDb(seedData());
+      state.db = seeded;
       state.selectedWell = null;
       state.legendFilter = null;
       closeDetail();
-      persist(); renderAll();
+      seeded.settings.updatedAt = nowStamp();
+      stampMtimes(seeded, null);
+      /* 明确的整体替换：强制覆盖云端，不做合并，避免旧数据被合并回来 */
+      putCloud(seeded, true).then(function(ok){ if (ok) renderAll(); });
+      renderAll();
       toast("已载入示例数据", "ok");
     } }
   ]);

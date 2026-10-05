@@ -16,8 +16,9 @@
 - GET  /api/labs/bracelet-key  查询本实验室手环进门码（无则返回 null）
 - POST /api/labs/bracelet-key  生成/轮换进门码 {rotate?}（烧进 NFC 手环，碰环免密进入）
 - POST /api/labs/bracelet-enter 凭进门码进入 {bkey} -> {token, lab}（公开接口）
+- GET  /api/rev            轻量版本号 {rev}（3s 轮询，他人改动即时感知）
 - GET  /api/db             读取当前实验室最新数据 {rev, db}
-- PUT  /api/db             保存数据（带版本校验，冲突返回 409 + 服务器最新数据）
+- PUT  /api/db             保存数据（带版本校验，冲突返回 409 + 服务器最新数据；前端自动三向合并重试）
 - POST /api/feedback       提交问题反馈 {issue 必填, idea?, user?}（X-Lab-Token 鉴权）
 - GET  /api/feedback/mine  本实验室未读的工程师回复（进入页面弹窗提醒用）
 - POST /api/feedback/read  标记回复已读 {ids}
@@ -537,6 +538,14 @@ def dissolve_lab(body: LabBody, request: Request) -> dict:
 
 
 # ---------------------------------------------------------------- data routes
+@app.get("/api/rev")
+def get_rev(request: Request) -> dict:
+    """轻量版本号轮询：只返回 rev，前端 3s 一次检测他人改动，避免频繁拉全量文档。"""
+    lab = _require_lab(request)
+    doc = _load_doc(lab["id"])
+    return {"rev": doc["rev"] if doc else 0}
+
+
 @app.get("/api/db")
 def get_db(request: Request) -> dict:
     lab = _require_lab(request)
