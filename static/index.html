@@ -141,7 +141,7 @@ ul{margin:0;padding:0;list-style:none}
 
 /* SECTION: topbar */
 .topbar{
-  position:sticky;top:0;z-index:40;
+  position:sticky;top:0;z-index:76; /* 高于手机详情面板(70)避免被盖，低于弹窗遮罩(80)保持模态 */
   display:flex;align-items:center;gap:16px;flex-wrap:wrap;
   padding:10px 16px;
   background:#123a63;
@@ -564,7 +564,6 @@ textarea ~ .input-clear-x{top:7px}
 .toast.err{background:#8f2b20}
 .toast.ok{background:#0d6a4e}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.mob-toggle{display:none}
 .side-toggle{display:none}
 
 /* SECTION: cloud sync ui */
@@ -859,12 +858,11 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
 @media (max-width:1240px){
   .layout,.layout.no-detail{grid-template-columns:224px minmax(0,1fr)}
   .detail{
-    position:fixed;right:0;top:0;bottom:0;width:min(400px,100%);max-height:none;z-index:70;
+    position:fixed;right:0;top:var(--panel-top,0px);bottom:0;width:min(400px,100%);max-height:none;z-index:70;
     border-radius:0;border-left:1px solid var(--line);box-shadow:-14px 0 40px rgba(8,25,45,.2);
     transform:translateX(102%);transition:transform .22s ease;
   }
   .detail.open{transform:none}
-  .mob-toggle{display:inline-flex}
 }
 @media (max-width:860px){
   :root{--cell:46px}
@@ -1001,7 +999,6 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
     <button class="tbtn" id="btnLang" type="button" title="Language / 语言">EN</button>
     <button class="tbtn" id="userChip" type="button" title="用户资料"><svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> 未登录</button>
     <button class="tbtn" id="btnSettings" type="button" title="设置"><svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg> 设置</button>
-    <button class="tbtn mob-toggle" id="btnPanel" type="button" hidden>详情</button>
   </div>
   <input type="file" id="fileInput" accept="application/json,.json" class="sr" aria-hidden="true" tabindex="-1">
   <input type="file" id="csvFileInput" accept=".csv,.xlsx,.xls,text/csv,text/plain" class="sr" aria-hidden="true" tabindex="-1">
@@ -1979,7 +1976,6 @@ var I18N = {
   "读取文件失败，请重试": "Failed to read file, please retry",
   "条越界记录": " out-of-range record(s)",
   "目录": "Index",
-  "详情": "Details",
   "数据与统计": "Data & stats",
   "新增铁架": "New rack",
   "新增盒子": "New box",
@@ -3562,6 +3558,17 @@ var CHANGELOG = [
   {
     date: "2026-10-05",
     zh: [
+      "修复手机/窄屏上「详情」按钮点了没反应的问题：原来详情面板弹出后会把顶栏整个盖住，按钮永远点不到。现在已删除这个多余的按钮——详情面板打开时点面板外的空白处即可关闭，面板右上角的 × 也一直可用",
+      "手机/窄屏上详情面板现在从顶栏下方滑出，顶栏（设置、取菌、放菌、主题切换等）在查看菌管详情时始终可见可点，不会再被面板挡住"
+    ],
+    en: [
+      "Fixed the \"Details\" button not responding on phones/narrow screens: the detail panel used to cover the whole top bar, making the button unreachable. The redundant button is now removed — tap any blank area outside the panel to close it, and the × at the panel's top-right still works",
+      "On phones/narrow screens the detail panel now slides in below the top bar, so the top bar (settings, take/store, theme, etc.) stays visible and tappable while viewing a tube's details"
+    ]
+  },
+  {
+    date: "2026-10-05",
+    zh: [
       "进入管理台时格子图默认按「保菌管类型」分类着色（橙/绿/EP/返回样等类型一眼可分），不用再手动点顶部的「类型」",
       "新增改动日志：每一管菌的信息下方都有「改动日志」，写清楚谁在什么时候干了什么——存入、编辑（具体改了哪个字段、旧值→新值）、取出、删除取出记录、清空菌格都有记录；取菌弹层里也能看到该管最近 10 条",
       "「设置」里新增「实验室改动日志」：把全实验室每一管的改动按时间倒序一条条罗列（操作类型彩色标签 + 操作人 + 时间 + 铁架/盒子/孔位 + 字段变化明细），支持按人名/菌种/位置等关键字筛选，也可以一键清空全部日志。日志随云端数据同步，实验室所有成员看到同一份，谁动过菌一目了然"
@@ -4630,6 +4637,10 @@ function hl(text, q){
   return esc(s.slice(0, i)) + "<mark>" + esc(s.slice(i, i + q.length)) + "</mark>" + esc(s.slice(i + q.length));
 }
 /* SECTION: detail panel */
+function setPanelTop(){ // 手机/窄屏下面板从顶栏下方滑入，避免盖住顶栏按钮（顶栏高度随内容换行而变）
+  var tb = document.querySelector(".topbar");
+  document.documentElement.style.setProperty("--panel-top", (tb ? tb.offsetHeight : 0) + "px");
+}
 function openWell(pos){
   var box = getBox();
   if (!box) return;
@@ -4638,8 +4649,7 @@ function openWell(pos){
   renderGrid();
   renderDetail();
   document.getElementById("layout").classList.remove("no-detail");
-  document.getElementById("btnPanel").hidden = false;
-  if (window.innerWidth <= 1240 && !state.locateMode) document.getElementById("detail").classList.add("open");
+  if (window.innerWidth <= 1240 && !state.locateMode) { setPanelTop(); document.getElementById("detail").classList.add("open"); }
 }
 function closeDetail(){
   flushPendingAutoSave(); // 自动模式下，关闭面板前把 500ms 内的最后改动存掉
@@ -4648,7 +4658,6 @@ function closeDetail(){
   document.body.classList.remove("locate");
   document.getElementById("layout").classList.add("no-detail");
   document.getElementById("detail").classList.remove("open");
-  document.getElementById("btnPanel").hidden = true;
   resetLocSplit();
   renderGrid();
 }
@@ -6142,8 +6151,16 @@ function bindEvents(){
     if (document.getElementById("backdrop").classList.contains("open")) { closeModal(); return; }
     if (state.selectedWell) closeDetail();
   });
-  document.getElementById("btnPanel").addEventListener("click", function(){
-    document.getElementById("detail").classList.toggle("open");
+  // 手机/窄屏下面板打开时点击面板以外区域自动关闭（面板右上角 × 也可关闭）
+  document.addEventListener("click", function(e){
+    var detail = document.getElementById("detail");
+    if (!detail.classList.contains("open")) return;
+    if (state.locateMode) return;
+    if (detail.contains(e.target)) return;
+    if (e.target.closest("header")) return;
+    if (e.target.closest(".cell")) return; // 点另一个格子交给格子自身逻辑切换选中
+    if (e.target.closest("#backdrop, .modal, .sheet, .sheet-back")) return; // 弹窗/取存弹层打开时不干扰
+    closeDetail();
   });
   document.getElementById("btnSettings").addEventListener("click", openSettingsModal);
   document.getElementById("userChip").addEventListener("click", openProfileModal);
@@ -6152,6 +6169,7 @@ function bindEvents(){
   });
   window.addEventListener("resize", function(){
     if (window.innerWidth > 1240) document.getElementById("detail").classList.remove("open");
+    if (window.innerWidth <= 1240 && state.selectedWell) setPanelTop(); // 转屏/缩放后顶栏高度可能变化
     if (window.innerWidth > 860) document.getElementById("sidebar").classList.remove("collapsed");
   });
   document.getElementById("updatePill").addEventListener("click", onUpdatePillClick);
