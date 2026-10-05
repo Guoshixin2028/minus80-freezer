@@ -155,6 +155,12 @@ ul{margin:0;padding:0;list-style:none}
 }
 .brand h1{font-size:16px;letter-spacing:.3px;white-space:nowrap}
 .brand .sub{font-size:11.5px;opacity:.78;white-space:nowrap}
+.brand-actions{display:flex;align-items:center;gap:8px;margin-left:6px}
+.brand-actions .tbtn{font-weight:700;padding:6px 13px;border-radius:18px}
+.brand-take{background:#123a63;color:#fff;border-color:#123a63}
+.brand-take:hover{background:#0d2c4d}
+.brand-store{background:#2e8b57;color:#fff;border-color:#2e8b57}
+.brand-store:hover{background:#256e46}
 .ver-badge{
   font-size:11px;font-weight:600;vertical-align:middle;
   background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.35);
@@ -746,6 +752,17 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
 .mv-stat{font-size:12.5px;color:var(--ink-2);background:#fff;border:1px solid var(--line-soft);border-radius:9px;padding:8px 12px;margin:12px 0}
 .mv-search{width:100%;font-size:16px;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:#fff;margin-bottom:10px}
 .mv-search:focus{outline:none;border-color:var(--brand-2);box-shadow:0 0 0 3px var(--brand-soft)}
+.sq-history{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:-4px 0 10px;font-size:12.5px}
+.sq-history .sqh-lbl{color:var(--ink-3);font-weight:600}
+.sq-history .sqh-chip{
+  border:1px solid var(--line);background:var(--panel-2);color:var(--ink-1);
+  border-radius:14px;padding:3px 11px;cursor:pointer;font-size:12px;line-height:1.5;
+}
+.sq-history .sqh-chip:hover{border-color:var(--brand-2);color:var(--brand-2)}
+.sq-history .sqh-clear{
+  border:none;background:none;color:var(--ink-3);cursor:pointer;font-size:12px;padding:3px 6px;
+}
+.sq-history .sqh-clear:hover{color:#ff3b30}
 .mv-adv{margin:0 0 8px;font-size:13px}
 .mv-adv summary{cursor:pointer;color:var(--ink-2);font-weight:600;padding:6px 0;user-select:none}
 .mv-adv summary::marker{color:var(--ink-3)}
@@ -853,7 +870,16 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
   margin:0 0 4px;padding:14px 16px 13px;color:#fff;
   background:#123a63;
 }
-.locate-banner .lb-back{display:inline-block;font-size:12.5px;color:#cfe4f7;text-decoration:none;margin-bottom:8px}
+.locate-banner .lb-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.locate-banner .lb-back,.locate-banner .lb-home{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:13.5px;font-weight:700;text-decoration:none;line-height:1.4;
+  padding:7px 14px;border-radius:20px;border:1.5px solid rgba(255,255,255,.7);
+  background:rgba(255,255,255,.92);color:#123a63;transition:background .15s,border-color .15s;
+}
+.locate-banner .lb-home{background:#ff3b30;color:#fff;border-color:#ff3b30}
+.locate-banner .lb-back:hover{background:#fff}
+.locate-banner .lb-home:hover{background:#e0322a;border-color:#e0322a}
 .locate-banner .lb-main{display:flex;align-items:center;gap:12px}
 .locate-banner .lb-coord{
   font-family:ui-monospace,Consolas,monospace;font-size:30px;font-weight:800;line-height:1.05;
@@ -922,6 +948,14 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
       <h1>-80&#8451; 冰箱菌种管理台 <span class="ver-badge">迭代 v3 · 云端同步 + NFC 手环存/取</span></h1>
       <div class="sub">铁架 &rarr; 冻存盒 &rarr; 孔位 &middot; 菌种与取出记录 &middot; 云端同步</div>
     </span>
+    <div class="brand-actions">
+      <button class="tbtn brand-take" id="btnTopSearch" type="button" title="进入取菌 / 查找页面">
+        <svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg> 取菌
+      </button>
+      <button class="tbtn brand-store" id="btnTopStore" type="button" title="进入放菌 / 登记页面">
+        <svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m5 12 7 7 7-7"/></svg> 放菌
+      </button>
+    </div>
   </div>
   <div class="modes" id="modes" role="tablist" aria-label="着色方式"></div>
   <div class="tools">
@@ -1120,6 +1154,7 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
     <h2 class="mv-h"><svg class="ic ic-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg> 取菌 / 查找</h2>
     <p class="mv-sub">搜索菌名 &rarr; 查看位置 &rarr; 登记取出</p>
     <input type="search" id="sq" class="mv-search" placeholder="菌种、质粒、保存人、备注、孔位号" autocomplete="off">
+    <div class="sq-history" id="sqHistory" hidden></div>
     <details class="mv-adv">
       <summary>高级筛选</summary>
       <div class="adv-grid">
@@ -2677,6 +2712,15 @@ function enterView(id){
   var n = document.getElementById(id);
   if (n) n.hidden = false;
 }
+/* 管理台顶栏的「取菌/放菌」按钮：无刷新切到对应手环视图（隐藏其它 mview，避免叠加） */
+function goToView(viewId, initFn){
+  document.querySelectorAll(".mview").forEach(function(m){ m.hidden = true; });
+  document.body.classList.add("viewmode");
+  var n = document.getElementById(viewId);
+  if (n) n.hidden = false;
+  if (initFn) initFn();
+  window.scrollTo(0, 0);
+}
 
 /* SECTION: NFC writer（网页直接写手环，需安卓 Chrome + https） */
 var wrState = { kind: "store", writing: false, bkey: "", keyOn: true };
@@ -3015,12 +3059,15 @@ function initStoreView(){
   var rackParam = "";
   try { rackParam = (new URLSearchParams(location.search)).get("rack") || ""; } catch (e) {}
   fillStoreSelects(rackParam);
-  document.getElementById("stBoxSel").addEventListener("change", renderStoreGrid);
-  document.getElementById("stOnlyEmpty").addEventListener("change", renderStoreGrid);
-  wireTypeSelect(document.getElementById("sColor"), null);
-  document.getElementById("stSheetClose").addEventListener("click", function(){ showSheet("stSheet", false); });
-  document.getElementById("stSheetBack").addEventListener("click", function(){ showSheet("stSheet", false); });
-  document.getElementById("stSaveBtn").addEventListener("click", stSave);
+  if (!window._storeInited) {
+    window._storeInited = true;
+    document.getElementById("stBoxSel").addEventListener("change", renderStoreGrid);
+    document.getElementById("stOnlyEmpty").addEventListener("change", renderStoreGrid);
+    wireTypeSelect(document.getElementById("sColor"), null);
+    document.getElementById("stSheetClose").addEventListener("click", function(){ showSheet("stSheet", false); });
+    document.getElementById("stSheetBack").addEventListener("click", function(){ showSheet("stSheet", false); });
+    document.getElementById("stSaveBtn").addEventListener("click", stSave);
+  }
   renderStoreGrid();
 }
 
@@ -3211,23 +3258,79 @@ function sqTake(){
   toast("已登记取出：" + posLabel(sqCurrent.box, sqCurrent.pos) + "（" + (sqCurrent.well.strain || "未填菌种") + "）", "ok");
   sqCurrent = null;
 }
+
+/* ---- 搜索历史（按客户端 IP + 实验室隔离，存服务端） ---- */
+var _sqLastRecorded = "";
+function renderSearchHistory(queries){
+  var host = document.getElementById("sqHistory");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!queries || !queries.length) { host.hidden = true; return; }
+  host.hidden = false;
+  var head = el("span", "sqh-lbl", "最近搜索：");
+  host.appendChild(head);
+  queries.forEach(function(q){
+    var chip = el("button", "sqh-chip", q);
+    chip.type = "button";
+    chip.title = "用「" + q + "」搜索";
+    chip.addEventListener("click", function(){
+      var si = document.getElementById("sq");
+      si.value = q;
+      clearTimeout(sqDebounce);
+      renderSearchQ();
+      recordSearchHistory(q);
+    });
+    host.appendChild(chip);
+  });
+  var clear = el("button", "sqh-clear", "清空");
+  clear.type = "button";
+  clear.title = "清空搜索历史";
+  clear.addEventListener("click", function(){
+    fetch(API_BASE + "/api/search-history", { method: "DELETE", headers: authHeaders() })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){ renderSearchHistory((j && j.queries) || []); })
+      .catch(function(){});
+  });
+  host.appendChild(clear);
+}
+function loadSearchHistory(){
+  fetch(API_BASE + "/api/search-history", { cache: "no-store", headers: authHeaders() })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(j){ if (j) renderSearchHistory(j.queries || []); })
+    .catch(function(){});
+}
+function recordSearchHistory(q){
+  q = (q || "").trim();
+  if (q.length < 2 || q === _sqLastRecorded) return;
+  _sqLastRecorded = q;
+  labPost("/api/search-history", { query: q })
+    .then(function(j){ renderSearchHistory((j && j.queries) || []); })
+    .catch(function(){});
+}
 function initSearchView(){
   refreshDatalists();
   fillSqBoxSelect();
   initSqSortBar();
-  ["sq", "sqStrain", "sqPlasmid", "sqKeeper"].forEach(function(id){
-    document.getElementById(id).addEventListener("input", function(){
-      clearTimeout(sqDebounce);
-      sqDebounce = setTimeout(renderSearchQ, 180);
+  if (!window._sqInited) {
+    window._sqInited = true;
+    ["sq", "sqStrain", "sqPlasmid", "sqKeeper"].forEach(function(id){
+      document.getElementById(id).addEventListener("input", function(){
+        clearTimeout(sqDebounce);
+        sqDebounce = setTimeout(function(){
+          renderSearchQ();
+          recordSearchHistory(document.getElementById("sq").value);
+        }, 180);
+      });
     });
-  });
-  ["sqBox", "sqStatus"].forEach(function(id){
-    document.getElementById(id).addEventListener("change", renderSearchQ);
-  });
-  document.getElementById("sqSheetClose").addEventListener("click", function(){ showSheet("sqSheet", false); });
-  document.getElementById("sqSheetBack").addEventListener("click", function(){ showSheet("sqSheet", false); });
-  document.getElementById("sqTakeBtn").addEventListener("click", sqTake);
+    ["sqBox", "sqStatus"].forEach(function(id){
+      document.getElementById(id).addEventListener("change", renderSearchQ);
+    });
+    document.getElementById("sqSheetClose").addEventListener("click", function(){ showSheet("sqSheet", false); });
+    document.getElementById("sqSheetBack").addEventListener("click", function(){ showSheet("sqSheet", false); });
+    document.getElementById("sqTakeBtn").addEventListener("click", sqTake);
+  }
   renderSearchQ();
+  loadSearchHistory();
   var si = document.getElementById("sq");
   if (si) setTimeout(function(){ si.focus(); }, 100);
 }
@@ -3330,6 +3433,19 @@ function cellGlyph(well){
 /* SECTION: render modes */
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
+  {
+    date: "2026-10-05",
+    zh: [
+      "取菌格子图定位页（从搜索结果点「在格子图中查看」进入）的横幅顶部新增「返回管理台」红色按钮，原先的「‹ 返回取菌搜索」也改成醒目的白底蓝边大按钮，方便随时回管理台或继续搜索",
+      "管理台顶部标题右侧新增「取菌」「放菌」两个按钮，不用再碰手环或手动改网址，直接点就能跳到取菌 / 放菌页面",
+      "取菌 / 查找页新增搜索历史：搜过的关键词会按「客户端 IP + 实验室」独立保存在云端（同 IP 同实验室共享、不同 IP 各自独立），输入框下方显示最近 15 条，点击可一键回填搜索，也可一键清空；管理台顶栏的搜索框搜过的词也会一并记入"
+    ],
+    en: [
+      "The locate split view (opened from a search result via \"View in grid\") now has a red \"Back to console\" button at the top of its banner, and the previous \"‹ Back to search\" link is restyled as a prominent white button with a blue border, making it easy to return to the console or keep searching",
+      "Added \"Take out\" and \"Put in\" buttons to the right of the title on the console top bar — no need to tap a bracelet or edit the URL; just click to jump to the search / store page",
+      "The search page now keeps a search history: past queries are stored on the server, isolated per \"client IP + lab\" (shared within the same IP & lab, independent across IPs). The last 15 queries are shown as chips below the search box; click one to refill and search, or clear them all. Queries typed into the console top-bar search box are also recorded"
+    ]
+  },
   {
     date: "2026-10-05",
     zh: [
@@ -4390,9 +4506,14 @@ function currentWell(){
 }
 function buildLocateBanner(rack, box, well, label){
   var bn = el("div", "locate-banner");
+  var actions = el("div", "lb-actions");
+  var home = el("a", "lb-home", "返回管理台");
+  home.href = "/";
+  actions.appendChild(home);
   var back = el("a", "lb-back", "\u2039 返回取菌搜索");
   back.href = "/?view=search";
-  bn.appendChild(back);
+  actions.appendChild(back);
+  bn.appendChild(actions);
   var main = el("div", "lb-main");
   main.appendChild(el("div", "lb-coord", label));
   var meta = el("div", "lb-meta");
@@ -5652,6 +5773,8 @@ var eventsBound = false;
 function bindEvents(){
   if (eventsBound) return;
   eventsBound = true;
+  document.getElementById("btnTopSearch").addEventListener("click", function(){ goToView("searchView", initSearchView); });
+  document.getElementById("btnTopStore").addEventListener("click", function(){ goToView("storeView", initStoreView); });
   document.getElementById("btnAddRack").addEventListener("click", askAddRack);
   document.getElementById("btnAddBox").addEventListener("click", askAddBox);
   document.getElementById("btnExport").addEventListener("click", exportJson);
@@ -5674,6 +5797,7 @@ function bindEvents(){
     state.query = si.value;
     sbx.classList.toggle("has-q", !!si.value.trim());
     renderGrid();
+    recordSearchHistory(si.value);
   });
   si.addEventListener("keydown", function(e){
     if (e.key === "Escape") { si.value = ""; state.query = ""; sbx.classList.remove("has-q"); renderGrid(); }

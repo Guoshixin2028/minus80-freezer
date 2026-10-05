@@ -97,6 +97,13 @@ def _reg() -> sqlite3.Connection:
         "CREATE TABLE IF NOT EXISTS bracelet_keys ("
         "lab_id TEXT PRIMARY KEY, bkey TEXT UNIQUE NOT NULL, created_at REAL)"
     )
+    # 取菌搜索历史：按「客户端 IP + 实验室」隔离，同 IP 同实验室共享、不同 IP 各自独立；
+    # 同词 upsert 更新时间，超过上限自动淘汰最旧条目。
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS search_history ("
+        "ip TEXT NOT NULL, lab_id TEXT NOT NULL, query TEXT NOT NULL, created_at REAL NOT NULL, "
+        "PRIMARY KEY (ip, lab_id, query))"
+    )
     return c
 
 
@@ -272,6 +279,10 @@ class ClaimBody(BaseModel):
 class BraceletBody(BaseModel):
     bkey: str = ""
     rotate: bool = False
+
+
+class SearchHistoryBody(BaseModel):
+    query: str = ""
 
 
 # ---------------------------------------------------------------- lab routes
@@ -810,6 +821,62 @@ def parse_excel(body: dict = Body(...)) -> Any:
     except Exception as e:  # noqa: BLE001 - 给前端可读错误，不抛 500
         raise HTTPException(status_code=400, detail="无法解析 Excel 文件：" + str(e))
     return {"sheets": sheets}
+
+
+# ---------------------------------------------------------------- search history（按 IP + 实验室隔离）
+_SEARCH_HISTORY_LIMIT = 15
+
+
+@app.get("/api/search-history")
+def get_search_history(request: Request) -> dict:
+    """取当前「客户端 IP + 实验室」的搜索历史（最近 15 条，按时间倒序）。"""
+    lab = _require_lab(request)
+    ip = _client_ip(request)
+    with _reg() as c:
+        rows = c.execute(
+            "SELECT query FROM search_history "
+            "WHERE ip = ? AND lab_id = ? ORDER BY created_at DESC LIMIT ?",
+            (ip, lab["id"], _SEARCH_HISTORY_LIMIT),
+        ).fetchall()
+    return {"queries": [r[0] for r in rows]}
+
+
+@app.post("/api/search-history")
+def add_search_history(body: SearchHistoryBody, request: Request) -> dict:
+    """写入一条搜索词（空串忽略）；同词 upsert 更新时间，超上限淘汰最旧。"""
+    lab = _require_lab(request)
+    ip = _client_ip(request)
+    q = (body.query or "").strip()
+    if not q:
+        return get_search_history(request)
+    now = time.time()
+    with _lock, _reg() as c:
+        c.execute(
+            "INSERT INTO search_history(ip, lab_id, query, created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(ip, lab_id, query) DO UPDATE SET created_at=excluded.created_at",
+            (ip, lab["id"], q, now),
+        )
+        # 超过上限则删除最旧的条目（保留最新 N 条）
+        c.execute(
+            "DELETE FROM search_history WHERE ip = ? AND lab_id = ? AND query NOT IN ("
+            "SELECT query FROM search_history WHERE ip = ? AND lab_id = ? "
+            "ORDER BY created_at DESC LIMIT ?)",
+            (ip, lab["id"], ip, lab["id"], _SEARCH_HISTORY_LIMIT),
+        )
+    return get_search_history(request)
+
+
+@app.delete("/api/search-history")
+def clear_search_history(request: Request) -> dict:
+    """清空当前「客户端 IP + 实验室」的搜索历史。"""
+    lab = _require_lab(request)
+    ip = _client_ip(request)
+    with _lock, _reg() as c:
+        c.execute(
+            "DELETE FROM search_history WHERE ip = ? AND lab_id = ?",
+            (ip, lab["id"]),
+        )
+    return {"queries": []}
 
 
 # ---------------------------------------------------------------- static
