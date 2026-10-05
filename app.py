@@ -13,6 +13,9 @@
 - POST /api/labs/join      加入实验室 {name, password} -> {token, lab}
 - POST /api/labs/claim     认领旧版单库数据 {id, name, password}
 - POST /api/labs/leave     离开（解除本 IP 绑定，令牌失效）
+- GET  /api/labs/bracelet-key  查询本实验室手环进门码（无则返回 null）
+- POST /api/labs/bracelet-key  生成/轮换进门码 {rotate?}（烧进 NFC 手环，碰环免密进入）
+- POST /api/labs/bracelet-enter 凭进门码进入 {bkey} -> {token, lab}（公开接口）
 - GET  /api/db             读取当前实验室最新数据 {rev, db}
 - PUT  /api/db             保存数据（带版本校验，冲突返回 409 + 服务器最新数据）
 - GET  /api/health    健康检查
@@ -87,6 +90,12 @@ def _reg() -> sqlite3.Connection:
     c.execute(
         "CREATE TABLE IF NOT EXISTS tokens ("
         "token TEXT PRIMARY KEY, lab_id TEXT NOT NULL, created_at REAL)"
+    )
+    # 手环进门码：每实验室一个随机码，烧进 NFC 手环网址（?bk=xxx），
+    # 碰环即可换发正式登录令牌、免输实验室密码；轮换后旧码立即作废（挂失用）
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS bracelet_keys ("
+        "lab_id TEXT PRIMARY KEY, bkey TEXT UNIQUE NOT NULL, created_at REAL)"
     )
     return c
 
@@ -260,6 +269,11 @@ class ClaimBody(BaseModel):
     password: str = ""
 
 
+class BraceletBody(BaseModel):
+    bkey: str = ""
+    rotate: bool = False
+
+
 # ---------------------------------------------------------------- lab routes
 @app.get("/api/health")
 def health() -> dict:
@@ -387,6 +401,59 @@ def leave_lab(request: Request) -> dict:
     return {"ok": True}
 
 
+@app.get("/api/labs/bracelet-key")
+def get_bracelet_key(request: Request) -> dict:
+    """查询本实验室当前的手环进门码（未生成时 bkey 为 null）。"""
+    lab = _require_lab(request)
+    with _reg() as c:
+        row = c.execute(
+            "SELECT bkey, created_at FROM bracelet_keys WHERE lab_id = ?",
+            (lab["id"],),
+        ).fetchone()
+    if not row:
+        return {"bkey": None, "created_at": None}
+    return {"bkey": row[0], "created_at": row[1]}
+
+
+@app.post("/api/labs/bracelet-key")
+def upsert_bracelet_key(body: BraceletBody, request: Request) -> dict:
+    """生成进门码；rotate=true 时强制换码（旧码立刻失效，用于手环挂失/人员离开）。"""
+    lab = _require_lab(request)
+    with _lock, _reg() as c:
+        row = c.execute(
+            "SELECT bkey FROM bracelet_keys WHERE lab_id = ?", (lab["id"],)
+        ).fetchone()
+        if row and not body.rotate:
+            return {"bkey": row[0], "created": False}
+        bkey = secrets.token_urlsafe(18)  # ~144bit 熵，无法枚举；URL 安全字符
+        c.execute(
+            "INSERT INTO bracelet_keys(lab_id, bkey, created_at) VALUES(?,?,?) "
+            "ON CONFLICT(lab_id) DO UPDATE SET bkey=excluded.bkey, created_at=excluded.created_at",
+            (lab["id"], bkey, time.time()),
+        )
+    return {"bkey": bkey, "created": True}
+
+
+@app.post("/api/labs/bracelet-enter")
+def bracelet_enter(body: BraceletBody, request: Request) -> Any:
+    """公开接口：凭手环网址里的进门码换发正式登录令牌（并绑定当前 IP）。
+
+    进门码只解决「碰环免密进入」，不是实验室密码：解散实验室等敏感操作仍需密码。
+    """
+    code = (body.bkey or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="缺少进门码")
+    with _reg() as c:
+        row = c.execute(
+            "SELECT l.id, l.name FROM bracelet_keys bk "
+            "JOIN labs l ON l.id = bk.lab_id WHERE bk.bkey = ?",
+            (code,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=403, detail="进门码无效或已挂失，请联系管理员重新烧录手环")
+    return _admit(row, request)
+
+
 @app.post("/api/labs/dissolve")
 def dissolve_lab(body: LabBody, request: Request) -> dict:
     """解散当前实验室（需再次输入密码）：删除注册表记录、全部令牌/IP 绑定与数据目录。"""
@@ -402,6 +469,7 @@ def dissolve_lab(body: LabBody, request: Request) -> dict:
     with _lock, _reg() as c:
         c.execute("DELETE FROM tokens WHERE lab_id = ?", (lab["id"],))
         c.execute("DELETE FROM ip_binds WHERE lab_id = ?", (lab["id"],))
+        c.execute("DELETE FROM bracelet_keys WHERE lab_id = ?", (lab["id"],))
         c.execute("DELETE FROM labs WHERE id = ?", (lab["id"],))
     shutil.rmtree(_lab_dir(lab["id"]), ignore_errors=True)
     return {"ok": True}

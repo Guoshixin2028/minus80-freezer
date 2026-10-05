@@ -636,6 +636,13 @@ button{touch-action:manipulation}
 }
 .lab-err.show{display:block}
 [data-theme="dark"] .lab-err{background:#3a2024;color:#f1a8ab;border-color:#5a2f35}
+.lab-gatenotice{
+  margin:0 0 14px;padding:9px 12px;border-radius:9px;font-size:12.5px;line-height:1.6;
+  display:flex;align-items:flex-start;gap:7px;
+  background:#fdecec;color:#a02626;border:1px solid #f3c6c6;
+}
+.lab-gatenotice .ic{flex:none;margin-top:2px}
+[data-theme="dark"] .lab-gatenotice{background:#3a2024;color:#f1a8ab;border-color:#5a2f35}
 .lab-hint{font-size:12px;color:var(--ink-2);line-height:1.6;margin:-4px 0 14px}
 .lab-claimbanner{
   margin:0 0 14px;padding:11px 13px;border-radius:10px;font-size:13px;line-height:1.6;
@@ -707,6 +714,14 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
 .wr-tips{margin:14px 0 0;padding-left:20px;font-size:13px;color:#5a6d82;line-height:1.7}
 .wr-fallback{margin-top:16px;padding:14px;border-radius:12px;background:#fff7e8;border:1px solid #f0d5a4;font-size:13.5px;color:#6b4a17;line-height:1.7}
 .wr-fallback ol{margin:6px 0 0;padding-left:20px}
+.wr-keybox{margin:0 0 14px;padding:12px 14px;border-radius:12px;background:var(--brand-soft);border:1px solid #b9d8f5}
+.wr-keyrow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.wr-keycheck{display:inline-flex;align-items:center;gap:8px;font-size:14.5px;font-weight:650;color:var(--ink);cursor:pointer;user-select:none}
+.wr-keycheck input{width:17px;height:17px;accent-color:#2f7fd1;flex:none}
+.wr-keybtns{display:inline-flex;gap:8px;flex-wrap:wrap}
+.btn-mini{padding:6px 12px;font-size:12.5px;border-radius:8px}
+.wr-keyhint{margin:8px 0 0;font-size:12.5px;line-height:1.65;color:var(--ink-2)}
+[data-theme="dark"] .wr-keybox{border-color:#34506e}
 .mv-bar{
   position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:10px;
   padding:10px 14px;color:#fff;
@@ -1247,6 +1262,17 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
         <span class="wico"><svg class="ic ic-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></svg></span>
         <span><b>单手环（取 / 存二选一）</b><small>碰到手机弹出取 / 存选择页</small></span>
       </button>
+    </div>
+
+    <div class="wr-keybox" id="wrKeyBox" hidden>
+      <div class="wr-keyrow">
+        <label class="wr-keycheck" id="wrKeyLabel"><input type="checkbox" id="wrKeyOn"> <span>手环免密进门</span></label>
+        <span class="wr-keybtns">
+          <button class="btn btn-mini" type="button" id="wrKeyGen">生成进门码</button>
+          <button class="btn btn-mini" type="button" id="wrKeyRotate" hidden>挂失 / 换新码</button>
+        </span>
+      </div>
+      <p class="wr-keyhint" id="wrKeyHint"></p>
     </div>
 
     <div class="field">
@@ -1991,6 +2017,24 @@ var I18N = {
   "碰到手机直接打开「取菌 / 查找」界面": "Tapping the phone opens the Find/Checkout screen directly",
   "碰到手机弹出取 / 存选择页": "Tapping shows a checkout / store choice page",
   "手环写入链接：": "Bracelet URLs:",
+  /* ===== 手环免密进门码 ===== */
+  "手环免密进门": "Passwordless bracelet entry",
+  "生成进门码": "Create entry key",
+  "挂失 / 换新码": "Report lost / new key",
+  "生成进门码后，可把它随网址一起烧入手环：以后碰手环直接进入实验室，不用再输密码。进门码不是实验室密码，随时可以挂失换新。": "Once created, the entry key is burned into the bracelet together with the URL: tapping the bracelet opens the lab directly, no password needed. The entry key is not the lab password and can be revoked and replaced at any time.",
+  "已开启：进门码会随网址烧入手环，以后碰一下手环直接进入实验室，不用再输密码。进门码只用于开门，不是实验室密码；手环丢失或人员离开时点「挂失 / 换新码」，旧手环立即失效，重新烧录即可。": "Enabled: the entry key is burned into the bracelet with the URL, so tapping the bracelet opens the lab directly without typing the password. The key only opens the door — it is not the lab password. If a bracelet is lost or a member leaves, tap \"Report lost / new key\": old bracelets stop working immediately and just need rewriting.",
+  "进门码已生成，手环网址已自动更新": "Entry key created; bracelet URL updated automatically",
+  "生成失败：": "Creation failed: ",
+  "挂失手环并换新进门码？": "Report bracelet lost and issue a new entry key?",
+  "换新后，所有已烧录的旧手环会立即失效，需要用新网址重新烧录一遍。": "After rotation, every previously written bracelet stops working immediately and must be rewritten with the new URL.",
+  "适用于手环丢失、损坏，或有成员离开实验室。仅更换进门码，不影响实验室密码和数据。": "Use this when a bracelet is lost or damaged, or a member leaves. Only the entry key changes; the lab password and data are unaffected.",
+  "确认换新": "Confirm new key",
+  "已换新码，旧手环全部失效，请用新网址重新烧录": "New key issued; all old bracelets are now invalid — please rewrite them with the new URL",
+  "换新失败：": "Key rotation failed: ",
+  "手环进门码已失效或被挂失，请联系管理员重新烧录手环": "The bracelet entry key is invalid or has been revoked. Please ask an administrator to rewrite the bracelet.",
+  "进门码无效或已挂失，请联系管理员重新烧录手环": "Invalid or revoked entry key. Please ask an administrator to rewrite the bracelet.",
+  "缺少进门码": "Missing entry key",
+  "以上链接已含免密进门码，碰手环直接进实验室；进门码管理（生成 / 挂失换新）请打开烧录页": "These URLs already include the passwordless entry key — tapping the bracelet enters the lab directly. To manage the key (create / revoke and replace), open the bracelet write page.",
   "存菌手环": "Store bracelet",
   "取菌手环": "Checkout bracelet",
   "单手环（取 / 存二选一）": "Single bracelet (choose checkout / store)",
@@ -2635,13 +2679,32 @@ function enterView(id){
 }
 
 /* SECTION: NFC writer（网页直接写手环，需安卓 Chrome + https） */
-var wrState = { kind: "store", writing: false };
+var wrState = { kind: "store", writing: false, bkey: "", keyOn: true };
+var WR_KEY_ON_KEY = "freezer.braceletKeyOn.v1";
+try { wrState.keyOn = localStorage.getItem(WR_KEY_ON_KEY) !== "0"; } catch (e) {}
 var WR_PROD_ORIGIN = "https://a2068589673-minus80-freezer.ms.show";
 function braceletBase(){
   // 手环网址一律用真实部署地址：本机/局域网（非 https）打开时自动替换，避免把 127.0.0.1 烧进手环
   return location.protocol === "https:" ? location.origin : WR_PROD_ORIGIN;
 }
-function wrTargetUrl(kind){ return braceletBase() + "/?view=" + kind; }
+function wrTargetUrl(kind){
+  var u = braceletBase() + "/?view=" + kind;
+  if (wrState.bkey && wrState.keyOn) u += "&bk=" + encodeURIComponent(wrState.bkey);
+  return u;
+}
+/* 本实验室手环进门码（Promise 缓存，烧录页与设置弹窗共用） */
+var _bkeyPromise = null;
+function loadBraceletKey(){
+  if (_bkeyPromise) return _bkeyPromise;
+  _bkeyPromise = fetch(API_BASE + "/api/labs/bracelet-key", { cache: "no-store", headers: authHeaders() })
+    .then(function(r){ return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
+    .then(function(j){ return j.bkey || ""; })
+    .catch(function(){ return ""; });
+  return _bkeyPromise;
+}
+function rememberKeyOn(){
+  try { localStorage.setItem(WR_KEY_ON_KEY, wrState.keyOn ? "1" : "0"); } catch (e) {}
+}
 function wrErrText(e){
   if (!e) return "未知错误";
   if (e.name === "AbortError") return "已取消（没检测到手环）";
@@ -2677,6 +2740,7 @@ function initWriterView(){
   document.getElementById("wrSupported").hidden = !supported;
   document.getElementById("wrUnsupported").hidden = supported;
   select("store");
+  initBraceletKeyBox(urlInput, select);
   if (!supported) return;
   var statusEl = document.getElementById("wrStatus");
   var btn = document.getElementById("wrWrite");
@@ -2701,6 +2765,71 @@ function initWriterView(){
       wrState.writing = false;
       btn.disabled = false;
     }
+  });
+}
+function initBraceletKeyBox(urlInput, selectKind){
+  var box = document.getElementById("wrKeyBox");
+  if (!box) return;
+  var chk = document.getElementById("wrKeyOn");
+  var genBtn = document.getElementById("wrKeyGen");
+  var rotBtn = document.getElementById("wrKeyRotate");
+  var hint = document.getElementById("wrKeyHint");
+  function refreshUrl(){ urlInput.value = wrTargetUrl(wrState.kind); }
+  function renderKey(){
+    var has = !!wrState.bkey;
+    box.hidden = false;
+    chk.checked = has && wrState.keyOn;
+    chk.disabled = !has;
+    genBtn.hidden = has;
+    rotBtn.hidden = !has;
+    hint.textContent = has
+      ? "已开启：进门码会随网址烧入手环，以后碰一下手环直接进入实验室，不用再输密码。进门码只用于开门，不是实验室密码；手环丢失或人员离开时点「挂失 / 换新码」，旧手环立即失效，重新烧录即可。"
+      : "生成进门码后，可把它随网址一起烧入手环：以后碰手环直接进入实验室，不用再输密码。进门码不是实验室密码，随时可以挂失换新。";
+    refreshUrl();
+  }
+  chk.addEventListener("change", function(){
+    wrState.keyOn = chk.checked;
+    rememberKeyOn();
+    refreshUrl();
+  });
+  genBtn.addEventListener("click", function(){
+    genBtn.disabled = true;
+    labPost("/api/labs/bracelet-key", {}).then(function(j){
+      wrState.bkey = j.bkey || "";
+      _bkeyPromise = Promise.resolve(wrState.bkey);
+      wrState.keyOn = true;
+      rememberKeyOn();
+      renderKey();
+      toast("进门码已生成，手环网址已自动更新", "ok");
+    }).catch(function(e){
+      toast("生成失败：" + (e.message || ""), "err");
+    }).finally(function(){ genBtn.disabled = false; });
+  });
+  rotBtn.addEventListener("click", function(){
+    openModal("挂失手环并换新进门码？", [
+      el("p", null, "换新后，所有已烧录的旧手环会立即失效，需要用新网址重新烧录一遍。"),
+      el("p", null, "适用于手环丢失、损坏，或有成员离开实验室。仅更换进门码，不影响实验室密码和数据。")
+    ], [
+      { label: "取消", kind: "" },
+      { label: "确认换新", kind: "danger", fn: function(){
+        rotBtn.disabled = true;
+        labPost("/api/labs/bracelet-key", { rotate: true }).then(function(j){
+          wrState.bkey = j.bkey || "";
+          _bkeyPromise = Promise.resolve(wrState.bkey);
+          wrState.keyOn = true;
+          rememberKeyOn();
+          renderKey();
+          selectKind(wrState.kind);
+          toast("已换新码，旧手环全部失效，请用新网址重新烧录", "ok");
+        }).catch(function(e){
+          toast("换新失败：" + (e.message || ""), "err");
+        }).finally(function(){ rotBtn.disabled = false; });
+      } }
+    ]);
+  });
+  loadBraceletKey().then(function(k){
+    wrState.bkey = k || "";
+    renderKey();
   });
 }
 function showSheet(id, show){
@@ -3190,6 +3319,17 @@ function cellGlyph(well){
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
   {
+    date: "2026-10-05",
+    zh: [
+      "NFC 手环支持免密进门：在烧录页（碰手环打开的页面 → 设置里的「烧录 NFC 手环」入口）点一次「生成进门码」，进门码就会自动拼进手环网址；重新烧录后，以后任何人碰一下手环都直接进入实验室，不用再输实验室密码。进门码只是一把可挂失的「门卡」、不是实验室密码（改密码、解散实验室等仍需密码）；手环丢失、损坏或成员离开时，在烧录页点「挂失 / 换新码」，所有旧手环立即失效，用新网址重烧即可",
+      "设置弹窗里展示的手环写入链接会在进门码生成后自动带上免密参数，iPhone 用 NFC App 烧录时复制到的也是免密链接"
+    ],
+    en: [
+      "NFC bracelets now support passwordless entry: on the bracelet write page (open it from Settings → Write NFC bracelet), tap \"Create entry key\" once — the key is appended to the bracelet URL automatically. After rewriting the bracelets, anyone tapping a bracelet enters the lab directly without typing the lab password. The entry key is a revocable \"door card\", not the lab password (changing the password or dissolving the lab still needs the password). If a bracelet is lost/broken or a member leaves, tap \"Report lost / new key\": all old bracelets stop working immediately and just need rewriting with the new URL",
+      "The bracelet URLs shown in Settings automatically include the entry key once it exists, so iPhone users copying the link into an NFC app get the passwordless URL too"
+    ]
+  },
+  {
     date: "2026-10-04",
     zh: [
       "菌管信息编辑支持两种模式，可在「设置 → 个性化（仅本机）」中切换：① 自动保存（新默认）——在孔位详情框里修改日期/保存人/菌种/质粒/类型/备注后约 0.5 秒自动保存，不再有「保存修改」按钮，面板右上角新增撤回按钮（箭头图标），可逐步撤销最多 30 步，关闭面板前的最后改动也会自动落盘；② 手动保存——保留原来的「保存修改」按钮，点了才生效。新登记空格仍需点一次「登记这一格」；手机碰手环的存菌流程不受影响",
@@ -3561,7 +3701,17 @@ function openSettingsModal(){
   var oneUrl = el("p", null, "");
   oneUrl.style.cssText = "margin:4px 0;padding:6px;background:var(--panel-2);border-radius:4px";
   oneUrl.textContent = "\u5355\u624b\u73af\uff08tap\uff09\uff1a" + base + "/?view=tap";
-  urlBox.appendChild(twoUrls); urlBox.appendChild(oneUrl);
+  var keyNote = el("p", null, "");
+  keyNote.style.cssText = "margin:4px 0 0;font-size:11.5px;color:var(--ink-3)";
+  urlBox.appendChild(twoUrls); urlBox.appendChild(oneUrl); urlBox.appendChild(keyNote);
+  // 若实验室已生成手环进门码，设置里展示的链接同步带上 ?bk（并提示去烧录页管理/挂失）
+  loadBraceletKey().then(function(k){
+    if (!k) return;
+    var suf = "&bk=" + encodeURIComponent(k);
+    twoUrls.textContent = "存\u624b\u73af\uff1a" + base + "/?view=store" + suf + "\u3000\u53d6\u624b\u73af\uff1a" + base + "/?view=search" + suf;
+    oneUrl.textContent = "\u5355\u624b\u73af\uff08tap\uff09\uff1a" + base + "/?view=tap" + suf;
+    keyNote.textContent = "以上链接已含免密进门码，碰手环直接进实验室；进门码管理（生成 / 挂失换新）请打开烧录页";
+  });
   wrap.appendChild(urlBox);
 
   // 数据与语言（手机端顶栏精简后，导出入口移到这里）
@@ -5631,6 +5781,21 @@ function initThemeToggle(){
 /* SECTION: lab gate 实验室选择门（多数据库隔离） */
 var _labGateResolver = null;
 var _labGateReload = false;
+/* 手环网址里烧入的免密进门码参数（?bk=xxx）：仅在未登录时用于换发正式令牌 */
+function urlBraceletKey(){
+  try { return (new URLSearchParams(location.search).get("bk") || "").trim(); }
+  catch (e) { return ""; }
+}
+function scrubBraceletKeyFromUrl(){
+  /* 读到后立刻从地址栏抹掉：避免刷新重复换发、避免分享当前网址时连带泄露进门码 */
+  try {
+    var u = new URL(location.href);
+    if (u.searchParams.has("bk")) {
+      u.searchParams.delete("bk");
+      history.replaceState(null, "", u.pathname + (u.search || "") + u.hash);
+    }
+  } catch (e) {}
+}
 function labPost(path, body){
   return fetch(API_BASE + path, {
     method: "POST",
@@ -5644,10 +5809,23 @@ function labPost(path, body){
   });
 }
 async function ensureLabSession(){
+  var bk = urlBraceletKey();
+  if (bk) scrubBraceletKeyFromUrl();
   var r = await fetch(API_BASE + "/api/session", { cache: "no-store", headers: authHeaders() });
   if (!r.ok) throw new Error("session HTTP " + r.status);
   var j = await r.json();
   if (j.lab) { stateLab = j.lab; return; }
+  if (bk) {
+    try {
+      var adm = await labPost("/api/labs/bracelet-enter", { bkey: bk });
+      setLabSession(adm);
+      stateLab = adm.lab || null;
+      return;
+    } catch (e) {
+      await showLabGate(j.claim || null, false, "手环进门码已失效或被挂失，请联系管理员重新烧录手环");
+      return;
+    }
+  }
   await showLabGate(j.claim || null, false);
 }
 function hideLabGate(){
@@ -5672,14 +5850,14 @@ function labCardShell(){
   card.appendChild(body);
   return { card: card, body: body };
 }
-function showLabGate(claim, reloadAfter){
+function showLabGate(claim, reloadAfter, notice){
   _labGateReload = !!reloadAfter;
   var gate = document.getElementById("labGate");
   gate.innerHTML = "";
   gate.hidden = false;
   var parts = labCardShell();
   gate.appendChild(parts.card);
-  renderGateHome(parts.body, claim || null);
+  renderGateHome(parts.body, claim || null, notice || "");
   return new Promise(function(res){ _labGateResolver = res; });
 }
 function labBackBtn(body, claim){
@@ -5707,7 +5885,7 @@ function bindLabEnter(inputs, btn){
     });
   });
 }
-function renderGateHome(body, claim){
+function renderGateHome(body, claim, notice){
   body.innerHTML = "";
   if (claim) {
     var banner = el("div", "lab-claimbanner");
@@ -5721,6 +5899,12 @@ function renderGateHome(body, claim){
     banner.appendChild(el("br"));
     banner.appendChild(cb0);
     body.appendChild(banner);
+  }
+  if (notice) {
+    var nb = el("div", "lab-gatenotice");
+    nb.appendChild(icon("alert-triangle", "sm"));
+    nb.appendChild(document.createTextNode(" " + notice));
+    body.appendChild(nb);
   }
   var box = el("div", "lab-bigbtns");
   var jb = el("button", "lab-bigbtn");
