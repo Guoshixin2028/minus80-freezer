@@ -267,6 +267,38 @@ ul{margin:0;padding:0;list-style:none}
 .crumb .path{font-size:12px;color:var(--ink-3);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .crumb .path b{color:var(--ink-2);font-weight:600}
 .crumb h3{font-size:19px;margin-top:3px;letter-spacing:.2px}
+/* 手机端盒子快速切换入口：默认隐藏，仅 ≤860px 显示 */
+.box-switcher{display:none}
+@media (max-width:860px){
+  .box-switcher{
+    display:flex;align-items:center;gap:8px;width:100%;margin-top:9px;order:3;
+  }
+  .rack-pill{
+    display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;
+    padding:6px 10px;border-radius:16px;border:1px solid var(--line);
+    background:var(--surface);color:var(--ink-1);font-size:12.5px;font-weight:600;
+    white-space:nowrap;cursor:pointer;transition:background .12s,border-color .12s;
+  }
+  .rack-pill:hover{background:var(--surface-2)}
+  .rack-pill .rp-name{max-width:92px;overflow:hidden;text-overflow:ellipsis}
+  .rack-pill .rp-caret{font-size:9px;opacity:.6}
+  .rack-pill .ic-sm{width:15px;height:15px}
+  .box-chips{
+    display:flex;gap:6px;overflow-x:auto;flex:1 1 auto;min-width:0;
+    scrollbar-width:thin;-webkit-overflow-scrolling:touch;
+    padding-bottom:2px;
+  }
+  .box-chip{
+    flex:0 0 auto;padding:5px 12px;border-radius:14px;border:1px solid var(--line);
+    background:var(--surface);color:var(--ink-2);font-size:12.5px;white-space:nowrap;
+    cursor:pointer;transition:background .12s,color .12s,border-color .12s;
+  }
+  .box-chip:hover{background:var(--surface-2)}
+  .box-chip.active{
+    background:#123a63;color:#fff;border-color:#123a63;font-weight:700;
+  }
+  .box-chip.empty{border-style:dashed;opacity:.7;cursor:default}
+}
 .stats{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
 .stat{
   min-width:74px;padding:6px 11px;border-radius:9px;background:var(--panel-2);
@@ -880,10 +912,12 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
   .layout,.layout.no-detail{grid-template-columns:minmax(0,1fr);padding:12px 10px 26px}
   .topbar{padding:9px 11px;gap:9px}
   .brand{width:100%;min-width:0}
-  .brand > span:last-child{min-width:0;flex:1}
+  .brand-title{min-width:0;flex:1}
   .brand h1{font-size:clamp(13px,4.4vw,15px);white-space:normal;display:flex;flex-wrap:wrap;align-items:center;gap:3px}
   .ver-badge{font-size:clamp(8px,2.7vw,11px);padding:1px 6px;max-width:100%;vertical-align:baseline}
   .brand .sub{display:none}
+  .brand-actions{display:flex;align-items:center;gap:6px;margin-left:4px;flex:0 0 auto}
+  .brand-actions .tbtn{font-weight:700;padding:5px 9px;border-radius:16px;font-size:12px}
   .tools{margin-left:0;width:100%;order:3;gap:6px}
   .searchbox{flex:0 0 33%;min-width:0}
   .searchbox input{width:100%;padding:7px 24px 7px 26px;font-size:12.5px}
@@ -980,7 +1014,7 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
 <header class="topbar">
   <div class="brand">
     <span class="flake" aria-hidden="true"><svg class="ic ic-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/><path d="m20 16-4-4 4-4"/><path d="m4 8 4 4-4 4"/><path d="m16 4-4 4-4-4"/><path d="m8 20 4-4 4 4"/></svg></span>
-    <span>
+    <span class="brand-title">
       <h1>-80&#8451; 冰箱菌种管理台 <span class="ver-badge">迭代 v3 · 云端同步 + NFC 手环存/取</span></h1>
       <div class="sub">铁架 &rarr; 冻存盒 &rarr; 孔位 &middot; 菌种与取出记录 &middot; 云端同步</div>
     </span>
@@ -1058,6 +1092,7 @@ body.viewmode .topbar,body.viewmode .layout{display:none}
         <h3 id="boxTitle">请选择一个盒子</h3>
       </div>
       <div class="stats" id="boxStats"></div>
+      <div class="box-switcher" id="boxSwitcher"></div>
     </div>
     <div class="legend-bar">
       <div class="legend-title" id="legendTitle"></div>
@@ -3882,6 +3917,19 @@ var CHANGELOG = [
   {
     date: "2026-10-06",
     zh: [
+      "手机端顶栏「取菌」「放菌」按钮不再溢出屏幕，窄屏也能完整显示",
+      "手机端管理台格子图顶部新增铁架 / 盒子快速切换条，不用再点开左侧目录抽屉，直接点就能切盒子、循环切铁架",
+      "深色 / 浅色切换动画（微信等旧浏览器）改为新界面以圆形从按钮位置向外传递，不再是一个不透明色块盖住屏幕"
+    ],
+    en: [
+      "The \"Checkout\" and \"Store\" buttons in the top bar no longer overflow the screen on phones — they stay fully visible on narrow screens",
+      "The mobile console now has a rack / box quick-switch bar right above the grid: tap to switch boxes or cycle racks without opening the side drawer",
+      "The light/dark switch animation (on older browsers like WeChat's) now reveals the new theme as a circle expanding from the button, instead of an opaque blob covering the screen"
+    ]
+  },
+  {
+    date: "2026-10-06",
+    zh: [
       "多人同时编辑不再需要二选一：你和同学前后脚修改时，系统会自动把两边的改动合并（各改各的内容都会保留），不再弹出「保留我的 / 用云端的」确认框",
       "改动保存后约 3 秒内自动出现在其他同学的屏幕上，无需手动点「云端有更新」加载；你正在输入框打字时会等你输入完再刷新该面板，不会打断编辑",
       "同一管菌两端同时改：较晚的修改生效，但双方各自新增的取出记录和改动日志都会保留"
@@ -5058,6 +5106,42 @@ function renderStageHead(){
     s.appendChild(el("div", "k", p[0]));
     st.appendChild(s);
   });
+
+  /* 手机端盒子快速切换入口（桌面端通过 .box-switcher display:none 隐藏） */
+  var sw = document.getElementById("boxSwitcher");
+  if (sw) {
+    sw.innerHTML = "";
+    var racks = state.db.racks;
+    if (racks && racks.length) {
+      var curIdx = Math.max(0, racks.findIndex(function(r){ return r.id === (state.db.selected && state.db.selected.rackId); }));
+      var rackBtn = el("button", "rack-pill");
+      rackBtn.type = "button";
+      rackBtn.title = "切换铁架";
+      rackBtn.innerHTML = '<svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18"/><path d="M3 12h18"/><path d="M3 17h18"/></svg> <span class="rp-name">' + esc(rack ? rack.name : racks[curIdx].name) + '</span> <span class="rp-caret">&#9662;</span>';
+      rackBtn.addEventListener("click", function(){
+        if (racks.length <= 1) { toast("当前只有一个铁架", "ok"); return; }
+        var next = racks[(curIdx + 1) % racks.length];
+        selectRack(next.id);
+      });
+      sw.appendChild(rackBtn);
+
+      var chips = el("div", "box-chips");
+      if (rack && rack.boxes && rack.boxes.length) {
+        rack.boxes.forEach(function(b){
+          var c = el("button", "box-chip");
+          c.type = "button";
+          if (b.id === (state.db.selected && state.db.selected.boxId)) c.classList.add("active");
+          c.textContent = b.name;
+          c.title = b.name;
+          c.addEventListener("click", function(){ selectBox(b.id); });
+          chips.appendChild(c);
+        });
+      } else {
+        chips.appendChild(el("span", "box-chip empty", "暂无盒子，点左侧目录 + 新建"));
+      }
+      sw.appendChild(chips);
+    }
+  }
 }
 function renderLegend(){
   var host = document.getElementById("legend");
@@ -6823,47 +6907,42 @@ function toggleTheme(e){
   if (_themeRevealBusy){ applyTheme(next); return; }
   themeCircleReveal(next, x, y, radius);
 }
-/* 无 View Transitions 时的圆形扩散兜底：探针读出新主题背景色 → 覆盖层以按钮为
-   圆心 clip-path 圆形铺开（0.5s）→ 铺满后切换主题并淡出覆盖层（180ms） */
+/* 无 View Transitions 时的圆形扩散兜底：探针读出旧主题背景色 → 立即切换新主题 →
+   旧色覆盖层用径向遮罩开洞（圆洞以按钮为圆心 0.5s 扩大），新界面沿圆洞向外传递，
+   而不是一个纯色圆盖住屏幕 */
 var _themeRevealBusy = false;
 function themeCircleReveal(next, x, y, radius){
   _themeRevealBusy = true;
   var rootEl = document.documentElement;
-  var oldTheme = rootEl.dataset.theme || "light";
-  var probe = null, bg = "";
+  var bg = "";
   try {
-    probe = document.createElement("div");
+    var probe = document.createElement("div");
     probe.style.cssText = "position:fixed;left:-9999px;top:-9999px;background:var(--bg)";
     rootEl.appendChild(probe);
-    rootEl.dataset.theme = next; /* 临时换主题读新背景色（同步执行，不产生绘制） */
-    bg = getComputedStyle(probe).backgroundColor;
+    bg = getComputedStyle(probe).backgroundColor; /* 切换前的旧主题背景色 */
+    probe.parentNode.removeChild(probe);
   } catch(err){}
-  finally {
-    try { rootEl.dataset.theme = oldTheme; } catch(e2){}
-    try { if (probe && probe.parentNode) probe.parentNode.removeChild(probe); } catch(e3){}
-  }
   if (!bg){ applyTheme(next); _themeRevealBusy = false; return; }
-  var at = "circle(0px at " + x + "px " + y + "px)";
+  applyTheme(next); /* 新主题立即生效，被下面的旧色覆盖层暂时遮住 */
   var ov = document.createElement("div");
-  ov.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:200;pointer-events:none;"
-    + "background:" + bg + ";"
-    + "-webkit-clip-path:" + at + ";clip-path:" + at + ";"
-    + "-webkit-transition:-webkit-clip-path .5s ease-in,opacity .18s ease-out;"
-    + "transition:clip-path .5s ease-in,opacity .18s ease-out;";
+  ov.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:200;pointer-events:none;background:" + bg + ";";
   document.body.appendChild(ov);
-  requestAnimationFrame(function(){ requestAnimationFrame(function(){
-    var full = "circle(" + radius + "px at " + x + "px " + y + "px)";
-    try { ov.style.webkitClipPath = full; } catch(err){}
-    ov.style.clipPath = full;
-  });});
-  setTimeout(function(){
-    applyTheme(next);
-    ov.style.opacity = "0";
-    setTimeout(function(){
-      if (ov.parentNode) ov.parentNode.removeChild(ov);
-      _themeRevealBusy = false;
-    }, 220);
-  }, 530);
+  function hole(r){
+    var g = "radial-gradient(circle " + r + "px at " + x + "px " + y + "px, transparent 0px, transparent " + (r - 0.5) + "px, black " + r + "px)";
+    ov.style.webkitMaskImage = "-webkit-" + g;
+    ov.style.maskImage = g;
+  }
+  hole(0);
+  var t0 = null, DUR = 500;
+  function step(ts){
+    if (t0 == null) t0 = ts;
+    var k = Math.min(1, (ts - t0) / DUR);
+    var e = 1 - Math.pow(1 - k, 2); /* ease-out：起步快、收尾平滑 */
+    hole(radius * e);
+    if (k < 1) requestAnimationFrame(step);
+    else { if (ov.parentNode) ov.parentNode.removeChild(ov); _themeRevealBusy = false; }
+  }
+  requestAnimationFrame(function(){ requestAnimationFrame(step); });
 }
 function initThemeToggle(){
   var btns = [];
