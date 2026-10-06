@@ -14,8 +14,22 @@
   }catch(e){ document.documentElement.dataset.theme = "light"; }
 })();
 </script>
+<script>
+/* 英文用户：在词典脚本（页面末尾）执行翻译前先藏住 body，避免每次加载都「先闪一下中文再变英文」。
+   initI18n() 翻完首页后立即移除 i18n-boot；2.5s 兜底防止任何异常导致白屏。 */
+(function(){
+  try{
+    if (localStorage.getItem("minus80-freezer.lang") === "en") {
+      document.documentElement.classList.add("lang-en", "i18n-boot");
+      setTimeout(function(){ document.documentElement.classList.remove("i18n-boot"); }, 2500);
+    }
+  }catch(e){}
+})();
+</script>
 <!-- SECTION: styles -->
 <style>
+/* 英文模式首屏防闪烁：body 在词典脚本完成首轮翻译前保持隐藏（i18n-boot 由 head 引导脚本提前加好） */
+html.i18n-boot body{visibility:hidden}
 :root{
   color-scheme:light;
   --bg:#eef3f9;
@@ -2448,21 +2462,30 @@ function i18nTitle(){
 function initI18n(){
   var btn = document.getElementById("btnLang");
   if (!btn) return;
+  /* 无论哪种语言，head 引导脚本加的首屏隐藏类都可以揭掉了（en 分支翻完再揭） */
+  var revealBoot = function(){ document.documentElement.classList.remove("i18n-boot"); };
   if (getLang() === "en") {
     document.body.classList.add("lang-en");
     btn.textContent = "中";
     i18nTitle();
     i18nRoot(document.body);
-    new MutationObserver(function(muts){
+    revealBoot();
+    /* 性能：renderAll 一次新增几千个格子节点，不能对每个 addedNode 都跑完整 i18nRoot
+       （TreeWalker+querySelectorAll 全子树扫描会 O(n²) 卡死主线程）。
+       做法：一个微任务周期内的新增节点先收集，flush 时剔除被其它根包含的节点，
+       翻译期间断开 observer，避免自己写 nodeValue/setAttribute 再次触发自己。 */
+    var pending = [];
+    var queued = false;
+    var mo = new MutationObserver(function(muts){
+      var needFlush = false;
       for (var i = 0; i < muts.length; i++){
         var m = muts[i];
         if (m.type === "childList") {
           m.addedNodes.forEach(function(nd){
-            if (nd.nodeType === 1) i18nRoot(nd);
-            else if (nd.nodeType === 3) i18nTextNode(nd);
+            if (nd.nodeType === 1 || nd.nodeType === 3) { pending.push(nd); needFlush = true; }
           });
         } else if (m.type === "characterData") {
-          i18nTextNode(m.target);
+          i18nTextNode(m.target);   /* 翻译后不含 CJK，再次回调自然停止，不会循环 */
         } else if (m.type === "attributes" && m.target && m.target.nodeType === 1) {
           I18N_ATTRS.forEach(function(a){
             var v = m.target.getAttribute(a);
@@ -2470,9 +2493,37 @@ function initI18n(){
           });
         }
       }
-    }).observe(document.body, { childList:true, subtree:true, characterData:true, attributes:true, attributeFilter: I18N_ATTRS });
+      if (needFlush && !queued) {
+        queued = true;
+        (window.queueMicrotask || function(fn){ Promise.resolve().then(fn); })(function(){
+          queued = false;
+          var roots = pending; pending = [];
+          /* 仍在文档中、且不被列表里其它元素根包含的才需要处理 */
+          roots = roots.filter(function(nd, idx){
+            if (!nd || !nd.isConnected) return false;
+            for (var j = 0; j < roots.length; j++){
+              var o = roots[j];
+              if (o !== nd && o.nodeType === 1 && (o === nd.parentNode || (o.contains && o.contains(nd)))) return false;
+            }
+            return true;
+          });
+          if (!roots.length) return;
+          mo.disconnect();
+          try {
+            roots.forEach(function(nd){
+              if (nd.nodeType === 1) i18nRoot(nd);
+              else i18nTextNode(nd);
+            });
+          } finally {
+            mo.observe(document.body, { childList:true, subtree:true, characterData:true, attributes:true, attributeFilter: I18N_ATTRS });
+          }
+        });
+      }
+    });
+    mo.observe(document.body, { childList:true, subtree:true, characterData:true, attributes:true, attributeFilter: I18N_ATTRS });
   } else {
     btn.textContent = "EN";
+    revealBoot();
   }
   btn.addEventListener("click", function(){
     try {
@@ -3933,6 +3984,17 @@ function cellGlyph(well){
 /* SECTION: render modes */
 /* SECTION: changelog 更新日志 */
 var CHANGELOG = [
+  {
+    date: "2026-10-06",
+    zh: [
+      "修复英文界面下每次打开 / 切换页面都先闪一下中文再变英文的问题，现在英文用户首屏直接看到英文",
+      "修复从取菌 / 放菌页点「返回管理台」后一直转圈加载、进不了管理台的问题（动态翻译在大量格子渲染时拖垮了页面）"
+    ],
+    en: [
+      "Fixed the flash of Chinese before every page load in English mode — English users now see English from the first paint",
+      "Fixed the infinite loading spinner when tapping \"Back to console\" from the checkout / store pages (live translation was overwhelming the large grid render)"
+    ]
+  },
   {
     date: "2026-10-06",
     zh: [
